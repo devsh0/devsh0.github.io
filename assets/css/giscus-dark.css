@@ -1,0 +1,24 @@
+/* Custom giscus theme matched to minima's dark skin.
+ *
+ * Imports giscus's hosted base dark theme (so every Primer variable stays
+ * defined), then overrides the surface colors with minima's $dm-* palette so
+ * the comment section reads as part of the post page rather than a GitHub box.
+ * Values mirror _sass/minima/skins/auto.scss (dark mode). */
+@import url("https://giscus.app/themes/dark.css");
+
+main {
+  --color-canvas-default: #181818;   /* $dm-background-color (page bg) */
+  --color-canvas-subtle: #181818;    /* blend panels into the page */
+  --color-canvas-inset: #222222;     /* $dm-code-background-color (textarea) */
+  --color-fg-default: #bbbbbb;       /* $dm-heading-color (body text) */
+  --color-fg-muted: #969696;         /* $dm-text-color (meta text) */
+  --color-fg-subtle: #999999;        /* $dm-brand-color */
+  --color-border-default: #2b2b2b;   /* $dm-border-color-01 */
+  --color-border-muted: #2b2b2b;
+  --color-accent-fg: #5691cd;        /* $dm-link-base-color (links) */
+  --color-accent-emphasis: #5691cd;
+
+  font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", Roboto, Helvetica,
+    Arial, sans-serif;
+}

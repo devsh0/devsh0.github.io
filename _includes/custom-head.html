@@ -6,19 +6,24 @@
     function stored() {
       try { return localStorage.getItem("theme"); } catch (e) { return null; }
     }
-    // Tracks the theme currently applied to the giscus iframe. Starts at "dark"
-    // to match the data-theme on the static embed, so we only postMessage when it
+    // Custom giscus themes matched to minima's skins (see assets/css/giscus-*.css).
+    var GISCUS_THEME = {
+      light: "{{ '/assets/css/giscus-light.css' | absolute_url }}",
+      dark: "{{ '/assets/css/giscus-dark.css' | absolute_url }}"
+    };
+    // Tracks the mode currently applied to the giscus iframe. Starts at "dark"
+    // to match the data-theme on the embed, so we only postMessage when it
     // actually needs to change (avoids reloading the iframe in a loop).
-    var giscusTheme = "dark";
-    function setGiscusTheme(theme) {
-      if (theme === giscusTheme) return;
+    var giscusMode = "dark";
+    function setGiscusTheme(mode) {
+      if (mode === giscusMode) return;
       var frame = document.querySelector("iframe.giscus-frame");
       if (!frame) return;
       frame.contentWindow.postMessage(
-        { giscus: { setConfig: { theme: theme } } },
+        { giscus: { setConfig: { theme: GISCUS_THEME[mode] } } },
         "https://giscus.app"
       );
-      giscusTheme = theme;
+      giscusMode = mode;
     }
     function apply(theme) {
       document.documentElement.setAttribute("data-theme", theme);

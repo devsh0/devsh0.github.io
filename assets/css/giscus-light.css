@@ -1,0 +1,23 @@
+/* Custom giscus theme matched to minima's light skin.
+ *
+ * Imports giscus's hosted base light theme, then overrides the surface colors
+ * with minima's $lm-* palette so the comment section blends into the post page.
+ * Values mirror _sass/minima/skins/auto.scss (light mode). */
+@import url("https://giscus.app/themes/light.css");
+
+main {
+  --color-canvas-default: #fdfdfd;   /* $lm-background-color (page bg) */
+  --color-canvas-subtle: #fdfdfd;    /* blend panels into the page */
+  --color-canvas-inset: #f6f8fa;     /* $lm-code-background-color (textarea) */
+  --color-fg-default: #111111;       /* $lm-heading-color (body text) */
+  --color-fg-muted: #414141;         /* $lm-text-color (meta text) */
+  --color-fg-subtle: #818181;        /* $lm-brand-color */
+  --color-border-default: #e7e7e7;   /* $lm-border-color-01 */
+  --color-border-muted: #e7e7e7;
+  --color-accent-fg: #1e69d8;        /* $lm-link-base-color (links) */
+  --color-accent-emphasis: #1e69d8;
+
+  font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", Roboto, Helvetica,
+    Arial, sans-serif;
+}
