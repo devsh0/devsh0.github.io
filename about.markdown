@@ -11,6 +11,7 @@ So if you're coming from an English-speaking community, you may find subtle (som
 I'd appreciate if you point them out in the comment section. In my eyes this feedback driven workflow that
 engages authors and readers directly is much healthier than an AI taping out content with perfect edges on
 all sides. Imagine a world where trees and mountains are all perfect cubes...I'm of the opinion that that'd
-suck!
+suck! Just to be clear though, I'm not anti-AI. I find it useful for many of my own tasks. I just think
+some things should remain human.
 
 Anyway, thanks for visiting. Hope you enjoy what you read here.
