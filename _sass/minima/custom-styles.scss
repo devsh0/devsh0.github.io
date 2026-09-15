@@ -112,6 +112,12 @@
   .theme-menu {
     display: block;
 
+    // Match minima's collapsed `.nav-item` padding so the summary's right edge
+    // lines up with "About" in the right-aligned mobile menu.
+    > summary {
+      padding: 5px 10px;
+    }
+
     .theme-options {
       position: static;
       border: 0;

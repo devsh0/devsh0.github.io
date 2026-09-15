@@ -24,6 +24,13 @@
         try { localStorage.setItem("theme", theme); } catch (e) {}
         menu.removeAttribute("open"); // close the <details> popover
       });
+
+      // Close the popover when clicking anywhere outside it.
+      document.addEventListener("click", function (event) {
+        if (menu.hasAttribute("open") && !menu.contains(event.target)) {
+          menu.removeAttribute("open");
+        }
+      });
     });
   })();
 </script>
