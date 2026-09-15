@@ -22,3 +22,9 @@ main {
     "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", Roboto, Helvetica,
     Arial, sans-serif;
 }
+
+/* Hide per-comment reactions (and the GitHub-disabled upvote button). Main-post
+   reactions are turned off separately via data-reactions-enabled="0". */
+.gsc-comment-reactions {
+  display: none !important;
+}
