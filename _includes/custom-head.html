@@ -6,16 +6,23 @@
     function stored() {
       try { return localStorage.getItem("theme"); } catch (e) { return null; }
     }
+    // Tracks the theme currently applied to the giscus iframe. Starts at "dark"
+    // to match the data-theme on the static embed, so we only postMessage when it
+    // actually needs to change (avoids reloading the iframe in a loop).
+    var giscusTheme = "dark";
+    function setGiscusTheme(theme) {
+      if (theme === giscusTheme) return;
+      var frame = document.querySelector("iframe.giscus-frame");
+      if (!frame) return;
+      frame.contentWindow.postMessage(
+        { giscus: { setConfig: { theme: theme } } },
+        "https://giscus.app"
+      );
+      giscusTheme = theme;
+    }
     function apply(theme) {
       document.documentElement.setAttribute("data-theme", theme);
-      // Keep the giscus comment widget (if present) in the same mode.
-      var giscus = document.querySelector("iframe.giscus-frame");
-      if (giscus) {
-        giscus.contentWindow.postMessage(
-          { giscus: { setConfig: { theme: theme } } },
-          "https://giscus.app"
-        );
-      }
+      setGiscusTheme(theme); // keep the comment widget in the same mode
     }
     var current = stored();
     apply(VALID[current] ? current : "dark");
@@ -39,6 +46,16 @@
           menu.removeAttribute("open");
         }
       });
+    });
+
+    // When the giscus iframe reports in (any giscus message), correct its theme
+    // to the reader's actual choice — the static embed defaults to dark, so a
+    // reader who picked light gets fixed as soon as the widget loads.
+    window.addEventListener("message", function (event) {
+      if (event.origin !== "https://giscus.app") return;
+      if (!event.data || typeof event.data.giscus === "undefined") return;
+      var theme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+      setGiscusTheme(theme);
     });
   })();
 </script>

@@ -38,7 +38,7 @@ minima:
 giscus:
   repo: "devsh0/devsh0.github.io"
   repo_id: "R_kgDOUa3FNg"
-  category: "Announcements"
+  category: "Comments"
   category_id: "DIC_kwDOUa3FNs4DFpHo"
   mapping: "pathname"    # one discussion thread per post URL
 
