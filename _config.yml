@@ -29,7 +29,7 @@ github_username: devsh0
 # Build settings
 theme: minima
 minima:
-  skin: dark # always dark; use "auto" to follow the visitor's OS light/dark preference
+  skin: auto # emits switchable CSS variables; the reader's Light/Dark choice (default dark) is applied client-side
   hide_site_feed_link: true # hides the RSS link in the footer (feed itself still generated)
 plugins:
   - jekyll-feed

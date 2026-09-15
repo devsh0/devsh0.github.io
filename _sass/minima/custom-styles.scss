@@ -1,0 +1,122 @@
+// Reader-selectable theme.
+//
+// The `auto` skin emits `--minima-*` custom properties (light by default, dark
+// under `prefers-color-scheme`). Here we bind those properties to an explicit
+// `data-theme` attribute on <html> so a reader's Light/Dark choice wins over the
+// OS preference. Colors are reused from minima's own computed `$lm-*` / `$dm-*`
+// values, so there is a single source of truth for the palette.
+
+:root[data-theme="light"] {
+  --minima-brand-color:           #{$lm-brand-color};
+  --minima-brand-color-light:     #{$lm-brand-color-light};
+  --minima-brand-color-dimmed:    #{$lm-brand-color-dimmed};
+  --minima-brand-color-dark:      #{$lm-brand-color-dark};
+  --minima-site-title-color:      #{$lm-site-title-color};
+  --minima-heading-color:         #{$lm-heading-color};
+  --minima-text-color:            #{$lm-text-color};
+  --minima-background-color:      #{$lm-background-color};
+  --minima-code-background-color: #{$lm-code-background-color};
+  --minima-link-base-color:       #{$lm-link-base-color};
+  --minima-link-visited-color:    #{$lm-link-visited-color};
+  --minima-link-hover-color:      #{$lm-link-hover-color};
+  --minima-border-color-01:       #{$lm-border-color-01};
+  --minima-border-color-02:       #{$lm-border-color-02};
+  --minima-border-color-03:       #{$lm-border-color-03};
+  --minima-table-text-color:      #{$lm-table-text-color};
+  --minima-table-zebra-color:     #{$lm-table-zebra-color};
+  --minima-table-header-bg-color: #{$lm-table-header-bg-color};
+  --minima-table-header-border:   #{$lm-table-header-border};
+  --minima-table-border-color:    #{$lm-table-border-color};
+
+  @include lm-highlight;
+}
+
+:root[data-theme="dark"] {
+  --minima-brand-color:           #{$dm-brand-color};
+  --minima-brand-color-light:     #{$dm-brand-color-light};
+  --minima-brand-color-dimmed:    #{$dm-brand-color-dimmed};
+  --minima-brand-color-dark:      #{$dm-brand-color-dark};
+  --minima-site-title-color:      #{$dm-site-title-color};
+  --minima-heading-color:         #{$dm-heading-color};
+  --minima-text-color:            #{$dm-text-color};
+  --minima-background-color:      #{$dm-background-color};
+  --minima-code-background-color: #{$dm-code-background-color};
+  --minima-link-base-color:       #{$dm-link-base-color};
+  --minima-link-visited-color:    #{$dm-link-visited-color};
+  --minima-link-hover-color:      #{$dm-link-hover-color};
+  --minima-border-color-01:       #{$dm-border-color-01};
+  --minima-border-color-02:       #{$dm-border-color-02};
+  --minima-border-color-03:       #{$dm-border-color-03};
+  --minima-table-text-color:      #{$dm-table-text-color};
+  --minima-table-zebra-color:     #{$dm-table-zebra-color};
+  --minima-table-header-bg-color: #{$dm-table-header-bg-color};
+  --minima-table-header-border:   #{$dm-table-header-border};
+  --minima-table-border-color:    #{$dm-table-border-color};
+
+  @include dm-highlight;
+}
+
+// Theme control in the site nav (a native <details> popover).
+.theme-menu {
+  display: inline-block;
+  position: relative;
+
+  > summary {
+    color: $text-color;
+    cursor: pointer;
+    line-height: $base-line-height * $base-font-size * 2.25;
+    list-style: none; // hide the default disclosure triangle (Firefox)
+    &::-webkit-details-marker { display: none; } // ...and WebKit
+
+    &::after {
+      content: " \25BE"; // ▾
+    }
+  }
+
+  &[open] > summary::after {
+    content: " \25B4"; // ▴
+  }
+
+  .theme-options {
+    position: absolute;
+    right: 0;
+    z-index: 1;
+    margin-top: 2px;
+    padding: $spacing-unit * 0.15;
+    background-color: $background-color;
+    border: 1px solid $border-color-01;
+    border-radius: 3px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    white-space: nowrap;
+  }
+
+  button[data-set-theme] {
+    display: block;
+    width: 100%;
+    padding: 5px 15px;
+    background: none;
+    border: 0;
+    color: $text-color;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+
+    &:hover {
+      color: $link-base-color;
+    }
+  }
+}
+
+// On narrow screens minima stacks nav items vertically; keep the popover in flow.
+@include media-query($on-medium) {
+  .theme-menu {
+    display: block;
+
+    .theme-options {
+      position: static;
+      border: 0;
+      box-shadow: none;
+      padding-left: 0;
+    }
+  }
+}

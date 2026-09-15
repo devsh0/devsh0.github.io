@@ -1,0 +1,29 @@
+<script>
+  // Theme selection. Applied before first paint to avoid a flash of the wrong theme.
+  // Only "light"/"dark" are valid; anything else falls back to dark.
+  (function () {
+    var VALID = { light: true, dark: true };
+    function stored() {
+      try { return localStorage.getItem("theme"); } catch (e) { return null; }
+    }
+    function apply(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+    var current = stored();
+    apply(VALID[current] ? current : "dark");
+
+    document.addEventListener("DOMContentLoaded", function () {
+      var menu = document.querySelector(".theme-menu");
+      if (!menu) return;
+      menu.addEventListener("click", function (event) {
+        var button = event.target.closest("[data-set-theme]");
+        if (!button) return;
+        var theme = button.getAttribute("data-set-theme");
+        if (!VALID[theme]) return;
+        apply(theme);
+        try { localStorage.setItem("theme", theme); } catch (e) {}
+        menu.removeAttribute("open"); // close the <details> popover
+      });
+    });
+  })();
+</script>
