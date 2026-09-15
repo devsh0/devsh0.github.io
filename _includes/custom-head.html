@@ -8,6 +8,14 @@
     }
     function apply(theme) {
       document.documentElement.setAttribute("data-theme", theme);
+      // Keep the giscus comment widget (if present) in the same mode.
+      var giscus = document.querySelector("iframe.giscus-frame");
+      if (giscus) {
+        giscus.contentWindow.postMessage(
+          { giscus: { setConfig: { theme: theme } } },
+          "https://giscus.app"
+        );
+      }
     }
     var current = stored();
     apply(VALID[current] ? current : "dark");

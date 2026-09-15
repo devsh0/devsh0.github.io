@@ -31,6 +31,17 @@ theme: minima
 minima:
   skin: auto # emits switchable CSS variables; the reader's Light/Dark choice (default dark) is applied client-side
   hide_site_feed_link: true # hides the RSS link in the footer (feed itself still generated)
+
+# Giscus comments (https://giscus.app). Comments render only in production
+# (JEKYLL_ENV=production). Fill repo_id and category_id from giscus.app; until
+# then the comments section stays hidden.
+giscus:
+  repo: "devsh0/devsh0.github.io"
+  repo_id: "R_kgDOUa3FNg"
+  category: "Announcements"
+  category_id: "DIC_kwDOUa3FNs4DFpHo"
+  mapping: "pathname"    # one discussion thread per post URL
+
 plugins:
   - jekyll-feed
 
