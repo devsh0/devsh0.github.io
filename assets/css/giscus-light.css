@@ -22,8 +22,16 @@ main {
     Arial, sans-serif;
 }
 
-/* Hide per-comment reactions (and the GitHub-disabled upvote button). Main-post
-   reactions are turned off separately via data-reactions-enabled="0". */
-.gsc-comment-reactions {
+/* Hide reactions on top-level comments (and the GitHub-disabled upvote button)
+   and on replies. Main-post reactions are turned off separately via
+   data-reactions-enabled="0". */
+.gsc-comment-reactions,
+.gsc-reply-reactions {
   display: none !important;
+}
+
+/* With reactions hidden, the footer's space-between collapses the "K replies"
+   count to the left. Keep it right-aligned regardless of siblings. */
+.gsc-comment-replies-count {
+  margin-left: auto;
 }
