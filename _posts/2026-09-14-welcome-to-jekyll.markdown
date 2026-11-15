@@ -181,28 +181,8 @@ void stop_counters(PerfContext& ctx) {
 }
 {% endhighlight %}
 
-Here's an example of how we'd be using these helpers to count occurrences of arbitrary events:
-
-{% highlight cpp %}
-int main() {
-    constexpr u64 evt_core_cycles = 0x003CU;
-    PerfContext ctx;
-    ctx.nevents = 1;
-    ctx.events[0] = {evt_core_cycles};
-    configure_event_group(ctx);
-    start_counters(ctx);
-    volatile u64 s = 0;
-    for (int i = 0; i < 100'000; i++) {
-        s += i;
-    }
-    stop_counters(ctx);
-    printf("core_cycles=%lu\n", ctx.counters[0]);
-    return 0;
-}
-{% endhighlight %}
-
-By default, Linux imposes certain restrictions on hardware PMU access due to security reasons. We can overcome these
-restrictions by setting [`perf_event_paranoid`][perf-paranoid] to `0` or `-1`. For maximum control, I'm going to set it
+By default, Linux imposes certain restrictions on hardware PMU access due to security reasons. We can overcome them by
+setting [`perf_event_paranoid`][perf-paranoid] to `0` or `-1`. For maximum control, I'm going to set it
 to `-1`:
 
 {%highlight shell %}
@@ -219,36 +199,41 @@ following events:
 | [MEM_INST_RETIRED.STLB_MISS_STORES][evt-miss-stores] | 0x12D0 | Retired store instructions that start a miss in the STLB. |
 | [DTLB_LOAD_MISSES.STLB_HIT][evt-stlb-hit]            | 0x2008 | Loads that miss the data TLB and hit the unified STLB.    |
 
-Astute observers will note that the event configs are of the form 0x\<Umask>\<EventSel>, where Umask and EventSel are coming
+It's note hard to notice that the event configs are of the form 0x\<Umask>\<EventSel>, where Umask and EventSel are coming
 from the "PROGRAMMING INFO" column of the corresponding event in the perfmon website (the 'H' suffix is Intel's way of
 saying the number is given in hexadecimal form). Not all event configs are derived like that, but for the simple ones we
-are using here, that's all we're gonna need.
+are using here, that's all we need.
 
 ## TLB Hierarchy in Skylake-X
 
-SKX (codename for Skylake-X) has two levels of TLB: L1 and L2. Each core gets a physically separate L1 data TLB (dTLB)
+SKX (codename for Skylake-X) has two levels of TLB: L1 and L2. Each SKX core gets a physically separate L1 data TLB (dTLB)
 and L1 instruction TLB (iTLB). The L2 TLB (also called the Second Level TLB or STLB) is unified, i.e. both instruction
 and data PTEs go to the same STLB.
 
 Both L1 and L2 TLBs are partitioned based on the page size. L1 dTLB has a total of 100 entries: 64 reserved for 4k pages,
 32 for 2M or 4M pages, and 4 for 1G pages. The dTLB is 4-way set associative, so each set can hold 4 page-table entries.
-The iTLB is also partitioned: it has 128 entries for 4k pages, 16 entries for 2M or 4M pages, and none for 1G pages. The
+The iTLB is also partitioned: has 128 entries for 4k pages, 16 entries for 2M or 4M pages, and none for 1G pages. The
 STLB has 1536 entries shared between 4k and 2M pages and an additional 16 entries for 1G huge pages.
 
-For the purposes of this post, we don't need to dig any further into the geometry of SKX TLBs. It's time to run some experiments!
+STLB is not inclusive of the L1 TLBs. That means at any given instance, a page-table entry can be found in one of the L1
+TLBs, the STLB, or both.
+
+For the purposes of this post, we don't need to dig any further into the geometry of SKX TLBs. It's time to run some
+experiments!
 
 ## Experiments and Findings
 
 The very first question that we should ask is whether the next-page prefetcher exists in SKX at all. NPPs seem like a
-good idea in general, and provided that Intel had the silicon budget to include one in Ivy Bridge, we expect the answer
-to be "Yes" in SKX too. To test this, we will create a workload that walks a mapped range sequentially and measure how
-many TLB misses we get.
+good idea in general; Given that Intel had the silicon budget to include one in Ivy Bridge, we expect the answer to be
+"Yes" in SKX too. To test this, we will design a workload that walks a mapped range of 1000 4K pages sequentially and
+measure how many TLB misses we get. I cannot imagine a more favourable access pattern for the NPP to kick in if it truly
+exists. If the workload below doesn't trigger the NPP, we can safely conclude that SKX doesn't have one.
 
 {%highlight cpp %}
 [[gnu::always_inline]]
 inline void workload_touch_all_bytes(int zero) {
     u8* map_base = (u8*)MAP_BASE;
-    u8 dummy;
+    u8 dummy = 0;
     for (size_t i = 0; i < MAP_SIZE; i++) {
         dummy += map_base[i + zero];
         zero = zero & dummy;
@@ -257,9 +242,50 @@ inline void workload_touch_all_bytes(int zero) {
 }
 {% endhighlight %}
 
-Not much going on here; we have a function that touches every byte in the mapped range starting at `MAP_BASE`. The seemingly
-useless parameter `zero` helps ensure that loads from the mapped range issue serially. Take a look at how we are using
-`zero` in the loop:
+Not much going on here. We have a function that touches every byte in the mapped range starting at `MAP_BASE`. The seemingly
+useless parameter `zero` helps ensure that loads from the mapped range execute serially. Take a close look at how we're using
+`zero` in the loop. Loading the next byte from the mapped range at iteration `i` depends on the value of `zero` computed
+at iteration `i-1`. Computing `zero` at iteration `i-1` in turn depends on computing `dummy` at iteration `i-1`. We have
+a cyclic loop-carried dependency chain here: the load in `map_base[i + zero]` feeds the `add` in `dummy += ...`. The
+result of the `add` then feeds the `and` in `zero = zero & ...`. Result of the `and` feeds the next load at iteration
+`i+1`. In layman terms, the loads at iteration `i` and iteration `i+1` cannot execute together or out-of-order. This is
+intentional: if we allowed out-of-order execution of the two loads, it could significantly perturb our results. We'll see
+why in a moment.
+
+The last line is a common trick to avoid the compiler throw away our computation; It's falsely advertising that the inline
+asm uses the value of `dummy` computed in the loop and forcing the compiler to materialize `dummy` into a register.
+
+With `g++ -O2`, the code above compiles to:
+
+{%highlight assembly %}
+.loop:
+    movsxd rdx, ebp                     ; tmp = zero
+    add    rdx, rax                     ; tmp += i
+    add    rax, 0x1                     ; i++
+    add    bl, BYTE PTR [rcx+rdx]       ; dummy += map_base[tmp]
+    and    ebp, ebx                     ; zero = zero & dummy
+    cmp    rax, 4096000                 ; if (i < MAP_SIZE)
+    jne    .loop                        ; goto .loop
+{% endhighlight %}
+
+Nice. A few instructions here and there but we got the loop compiled exactly how we wanted. Note that the dependency chain
+discussed in the C++ code translates exactly to assembly too. Running the workload gives the following counts for the two
+events:
+
+```text
+DTLB_LOAD_MISSES.STLB_HIT           = 70
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 1
+```
+Over a few runs, the `DTLB_LOAD_MISSES.STLB_HIT` count fluctuates in the 50..80 band, but it never exceeds 80. That's already
+interesting: note that we walked through 1000 pages in the loop but `DTLB_LOAD_MISSES.STLB_HIT` is nowhere near 1000. That
+must imply one of the following:
+
+1. Most dTLB load misses also miss in the STLB.
+2. There's a prefetcher prefilling either dTLB or STLB before demand arrives.
+
+We can quickly rule out (1) because `MEM_INST_RETIRED.STLB_MISS_LOADS = 1`.
+
+a prefetcher is prefilling the dTLB before demand arrives.
 
 [intel-whitepaper]: https://intel.github.io/optimization-zone/hardware/HWPrefetchTuning/#123-next-page-prefetcher-l1-npp
 [insn-wrmsr]: https://intel.github.io/SDM/instruction/WRMSR.html
