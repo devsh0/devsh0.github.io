@@ -70,9 +70,10 @@ need to [write a kernel-mode driver][win-driver] and use [`__readmsr`][win-rdmsr
 to read/write the relevant MSRs. That said, the hard part of making custom drivers for Windows isn't writing the driver
 itself, rather signing it so that it could be loaded by the kernel. More on that in a future blog post.
 
-Refer to Vol 3B, Chapter 22 (PERFORMANCE MONITORING) of the Intel Software Developer's Manual to learn more about the layout
-and configurable fields of IA32_PERFEVTSELx. Also see [perfmon-events][perfmon-events] for a list of named events and their
-respective field configuration.
+> Refer to Vol 3B, Chapter 22 (PERFORMANCE MONITORING) of the Intel Software Developer's Manual to learn more about the layout
+> and configurable fields of IA32_PERFEVTSELx. Also see [perfmon-events][perfmon-events] for a list of named events and their
+> respective field configuration.
+{: .note}
 
 On Linux, counting performance monitoring events is a bit simpler. Refer to the [`man pages`][perf-man] to see an example
 of `perf_event_open` API usage. In short, we need to do the following things in order:
@@ -203,12 +204,12 @@ are using here, that's all we need.
 
 ## TLB Hierarchy in Skylake-X
 
-SKX (codename for Skylake-X) has two levels of TLB: L1 and L2. Each SKX core gets a physically separate L1 data TLB (dTLB)
+SKX (codename for Skylake-X) has two TLB levels: L1 and L2. Each SKX core gets a physically separate L1 data TLB (dTLB)
 and L1 instruction TLB (iTLB). The L2 TLB (also called the Second Level TLB or STLB) is unified, i.e. both instruction
 and data PTEs go to the same STLB.
 
 Both L1 and L2 TLBs are partitioned based on the page size. L1 dTLB has a total of 100 entries: 64 reserved for 4k pages,
-32 for 2M or 4M pages, and 4 for 1G pages. The dTLB is 4-way set associative, so each set can hold 4 page-table entries.
+32 for 2M or 4M pages, and 4 for 1G pages. The dTLB is 4-way set associative so each set can hold 4 page-table entries.
 The iTLB is also partitioned: has 128 entries for 4k pages, 16 entries for 2M or 4M pages, and none for 1G pages. The
 STLB has 1536 entries shared between 4k and 2M pages and an additional 16 entries for 1G huge pages.
 
@@ -224,11 +225,11 @@ The very first question that we should ask is whether the next-page prefetcher e
 good idea in general; Given that Intel had the silicon budget to include one in Ivy Bridge, we expect the answer to be
 "Yes" in SKX too. To test this, we will design a workload that walks a mapped range of 1000 4K pages sequentially and
 measure how many TLB misses we get. I cannot imagine a more favourable access pattern for the NPP to kick in if it truly
-exists. If the workload below doesn't trigger the NPP, we can safely conclude that SKX doesn't have one.
+exists. If the workload below doesn't trigger page prefetches, we can safely conclude that SKX doesn't have an NPP.
 
 {%highlight cpp %}
 [[gnu::always_inline]]
-inline void workload_touch_all_bytes(int zero) {
+inline void touch_all_bytes(int zero) {
     u8* map_base = (u8*)MAP_BASE;
     u8 dummy = 0;
     for (size_t i = 0; i < MAP_SIZE; i++) {

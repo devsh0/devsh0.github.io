@@ -126,3 +126,30 @@
     }
   }
 }
+
+// Note callouts: write a blockquote followed by `{: .note}` on the next line.
+//
+//   > **Note:** Short aside here.
+//   {: .note}
+//
+// Colors come from the --minima-* properties so the box follows the reader's
+// Light/Dark choice. Overrides minima's large, italic, dimmed blockquote style.
+blockquote.note {
+  color: var(--minima-text-color);
+  font-size: inherit;
+  font-style: normal;
+  letter-spacing: normal;
+  background-color: var(--minima-code-background-color); // fallback
+  background-color: color-mix(in srgb, var(--minima-link-base-color) 8%, var(--minima-background-color));
+  border-left: 4px solid var(--minima-link-base-color);
+  border-radius: 0 4px 4px 0;
+  padding: 0.75em 1em;
+
+  i, em {
+    font-style: italic;
+  }
+
+  > :last-child {
+    margin-bottom: 0;
+  }
+}
