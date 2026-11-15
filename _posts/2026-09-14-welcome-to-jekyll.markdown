@@ -60,36 +60,38 @@ encouraged to do your own experiments and share the results.
 
 ## A Word on Performance Monitoring on Intel Platforms
 
-Linux allows configuring and reading performance monitoring counters via `perf_event_open` APIs. This is what I will be
-using in my experiments as well but generally speaking, we don't need special system APIs to access PMU counters. At
-least on Intel platforms, we only need the ability to write certain performance monitoring MSRs (usually it's the
-IA32_PERFEVTSELx MSRs) and read the counters back from a set of corresponding IA32_PMCx MSRs. [`WRMSR`][insn-wrmsr] and
-[`RDMSR`][insn-rdmsr] require Ring0 access so if you are on Windows, you might need to [write a kernel-mode driver][win-driver]
-and use [`__readmsr`][win-rdmsr] and [`__writemsr`] [win-wrmsr] intrinsics to read/write the relevant MSRs.
+Documenting the many details of performance monitoring on various platforms deserves a post of its own, and a fairly long
+one at that (I'm planning to write an article, hopefully soon). For the sake of simplicity, we'd only focus on Linux
+in this post. Linux allows configuring performance monitoring events via the `perf_event_open` syscall. That's what I will
+be using in my experiments as well but generally speaking, we don't need special system APIs to access PMU counters. At
+least on Intel platforms, we only need the ability to write a set of performance monitoring MSRs (usually only the IA32_PERFEVTSELx
+MSRs) and read the counters back from a set of corresponding IA32_PMCx MSRs. [`WRMSR`][insn-wrmsr] and [`RDMSR`][insn-rdmsr]
+require Ring0 access so if you're on Windows, you might need to [write a kernel-mode driver][win-driver] and use [`__readmsr`][win-rdmsr]
+and [`__writemsr`] [win-wrmsr] intrinsics to read/write the relevant MSRs. That said, the hard part of custom driver
+development on Windows isn't writing the driver itself, rather signing it so that it could be loaded by the kernel. More
+on that in a future blog post.
 
 Refer to Vol 3B, Chapter 22 (PERFORMANCE MONITORING) of the Intel Software Developer's Manual to learn more about the layout
-and configurable fields of IA32_PERFEVTSELx. Also visit https://perfmon-events.intel.com for a list of named events and their
+and configurable fields of IA32_PERFEVTSELx. Also visit [perfmon-events][perfmon-events] for a list of named events and their
 respective field configuration. We typically only need to write IA32_PERFEVTSELx MSRs to configure event(s) for counting,
 but complex events may require writing additional MSRs. As stated, we read one of the IA32_PMCx MSRs to count how many
 times a configured event occurred.
 
-On Linux, counting performance monitoring events is a lot more simpler. Refer to the [`man pages`][perf-man] to see an
-example of `perf_event_open` API usage. In short, we need to do three things in order:
+On Linux, counting performance monitoring events is a bit simpler. Refer to the [`man pages`][perf-man] to see an example
+of `perf_event_open` API usage. In short, we need to do the following things in order:
 
-1. Configure the events we want to count when the workload runs. Initially all counters will be disabled.
+1. Configure the events we want to count. Initially all counters will be disabled.
 2. Enable the counters. Here's where the IA32_PMCx registers start ticking.
 3. Stop the counters and read their values.
 
-We will write three helpers to achieve the same: `configure_event_group()` to configure the events, `start_counters()`
-to enable the counters, and `stop_counters()` to stop and read the counters.
-
-Here's how we'll define `configure_event_group()`:
+We will write a helper for each of the three steps: `configure_event_group()` to configure the events, `start_counters()`
+to enable the counters, and `stop_counters()` to stop and read the counters. We'll define `configure_event_group()` first:
 
 {% highlight cpp %}
 // With hyperthreading enabled, Skylake-X allows reading at most
 // 4 (non-fixed) event counters simultaneously.
 struct PerfContext {
-    u64 events[4];      // Raw event codes.
+    u64 events[4];      // Raw event configs.
     u64 counters[4];    // Measured counters for `events`.
     int open_fds[4];    // Open file descriptors. open_fds[0] is the group fd.
     int nevents;        // Number of events configured in the current event group.
@@ -140,7 +142,7 @@ void configure_event_group(PerfContext& ctx) {
 
 On success, `configure_event_group()` populates the `PerfContext::open_fds[4]` array. The first file descriptor in that
 array (i.e. the `group_fd`) is used to identify the event group that we configured with `configure_event_group()`. We can
-now use the `group_fd` to enable the counters using `start_counters()` which is defined below:
+now use the `group_fd` to enable the counters using `start_counters()`:
 
 {% highlight cpp %}
 // Sets off the counters for events in the event group.
@@ -153,12 +155,11 @@ void start_counters(PerfContext& ctx) {
 }
 {% endhighlight %}
 
-A call to `start_counters()` sets off all the counters for every event configured in the event group identified by the
-`group_fd`. At this point we will run our workload, then call `stop_counters()` to stop and read the counters. `stop_counters()`
-is defined below:
+A call to `start_counters()` sets off all the counters for every event configured in the event group identified by `group_fd`.
+At this point we will run our workload, then call `stop_counters()` to stop and read the counters:
 
 {% highlight cpp %}
-// Stops and reads the counters in the event group. Closes the event group afterwards.
+// Stops and reads the counters in the event group. Then does some cleanup.
 void stop_counters(PerfContext& ctx) {
     // Stop the counters.
     int group_fd = ctx.open_fds[0];
@@ -209,6 +210,31 @@ int main() {
 }
 {% endhighlight %}
 
+By default, Linux imposes certain restrictions on hardware PMU access due to security reasons. We can overcome these
+restrictions by setting [`perf_event_paranoid`][perf-paranoid] to `0` or `-1`. For maximum control, I'm going to set it
+to `-1`:
+
+{%highlight shell %}
+echo "-1" | sudo tee /proc/sys/kernel/perf_event_paranoid
+{% endhighlight %}
+
+Now we have all the required pieces to start monitoring hardware events. Throughout this post, we are interested in the
+following events:
+
+| Event                                                | Config | Description                                               |
+|------------------------------------------------------|--------|-----------------------------------------------------------|
+| [CPU_CLK_UNHALTED.THREAD_P][evt-core-cycles]         | 0x003C | Cycles passed in the main clock driving the core.         |
+| [MEM_INST_RETIRED.STLB_MISS_LOADS][evt-miss-loads]   | 0x11D0 | Retired load instructions that start a miss in the STLB.  |
+| [MEM_INST_RETIRED.STLB_MISS_STORES][evt-miss-stores] | 0x12D0 | Retired store instructions that start a miss in the STLB. |
+| [DTLB_LOAD_MISSES.STLB_HIT][evt-stlb-hit]            | 0x2008 | Loads that miss the data TLB and hit the unified STLB.    |
+
+Astute observers will note that the event configs are of the form 0x\<Umask>\<EventSel>, where Umask and EventSel are coming
+from the "PROGRAMMING INFO" column of the corresponding event in the perfmon website (the 'H' suffix is Intel's way of
+saying the number is given in hexadecimal form). Not all event configs are derived like that, but for the simple ones we
+are using here, that's all you need.
+
+## TLB Hierarchy on Skylake-X
+
 [intel-whitepaper]: https://intel.github.io/optimization-zone/hardware/HWPrefetchTuning/#123-next-page-prefetcher-l1-npp
 [insn-wrmsr]: https://intel.github.io/SDM/instruction/WRMSR.html
 [insn-rdmsr]: https://intel.github.io/SDM/instruction/RDMSR.html
@@ -216,3 +242,9 @@ int main() {
 [win-rdmsr]: https://learn.microsoft.com/en-us/cpp/intrinsics/readmsr
 [win-wrmsr]: https://learn.microsoft.com/en-us/cpp/intrinsics/writemsr
 [perf-man]: https://man7.org/linux/man-pages/man2/perf_event_open.2.html
+[perfmon-events]: https://perfmon-events.intel.com
+[perf-paranoid]: https://www.kernel.org/doc/html/latest/admin-guide/perf-security.html#unprivileged-users
+[evt-core-cycles]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-CPU_CLK_UNHALTED.THREAD_P
+[evt-miss-loads]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-MEM_INST_RETIRED.STLB_MISS_LOADS
+[evt-miss-stores]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-MEM_INST_RETIRED.STLB_MISS_STORES
+[evt-stlb-hit]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-DTLB_LOAD_MISSES.STLB_HIT
