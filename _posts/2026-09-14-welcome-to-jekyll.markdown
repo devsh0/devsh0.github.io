@@ -88,15 +88,6 @@ We will write a helper for each of the three steps: `configure_event_group()` to
 to enable the counters, and `stop_counters()` to stop and read the counters. We'll define `configure_event_group()` first:
 
 {% highlight cpp %}
-// With hyperthreading enabled, Skylake-X allows reading at most
-// 4 (non-fixed) event counters simultaneously.
-struct PerfContext {
-    u64 events[4];      // Raw event configs.
-    u64 counters[4];    // Measured counters for `events`.
-    int open_fds[4];    // Open file descriptors. open_fds[0] is the group fd.
-    int nevents;        // Number of events configured in the current event group.
-};
-
 // Configures a set of events (i.e. an "event group") for counting.
 void configure_event_group(PerfContext& ctx) {
     if (ctx.nevents < 1 || ctx.nevents > 4) {
@@ -231,9 +222,44 @@ following events:
 Astute observers will note that the event configs are of the form 0x\<Umask>\<EventSel>, where Umask and EventSel are coming
 from the "PROGRAMMING INFO" column of the corresponding event in the perfmon website (the 'H' suffix is Intel's way of
 saying the number is given in hexadecimal form). Not all event configs are derived like that, but for the simple ones we
-are using here, that's all you need.
+are using here, that's all we're gonna need.
 
-## TLB Hierarchy on Skylake-X
+## TLB Hierarchy in Skylake-X
+
+SKX (codename for Skylake-X) has two levels of TLB: L1 and L2. Each core gets a physically separate L1 data TLB (dTLB)
+and L1 instruction TLB (iTLB). The L2 TLB (also called the Second Level TLB or STLB) is unified, i.e. both instruction
+and data PTEs go to the same STLB.
+
+Both L1 and L2 TLBs are partitioned based on the page size. L1 dTLB has a total of 100 entries: 64 reserved for 4k pages,
+32 for 2M or 4M pages, and 4 for 1G pages. The dTLB is 4-way set associative, so each set can hold 4 page-table entries.
+The iTLB is also partitioned: it has 128 entries for 4k pages, 16 entries for 2M or 4M pages, and none for 1G pages. The
+STLB has 1536 entries shared between 4k and 2M pages and an additional 16 entries for 1G huge pages.
+
+For the purposes of this post, we don't need to dig any further into the geometry of SKX TLBs. It's time to run some experiments!
+
+## Experiments and Findings
+
+The very first question that we should ask is whether the next-page prefetcher exists in SKX at all. NPPs seem like a
+good idea in general, and provided that Intel had the silicon budget to include one in Ivy Bridge, we expect the answer
+to be "Yes" in SKX too. To test this, we will create a workload that walks a mapped range sequentially and measure how
+many TLB misses we get.
+
+{%highlight cpp %}
+[[gnu::always_inline]]
+inline void workload_touch_all_bytes(int zero) {
+    u8* map_base = (u8*)MAP_BASE;
+    u8 dummy;
+    for (size_t i = 0; i < MAP_SIZE; i++) {
+        dummy += map_base[i + zero];
+        zero = zero & dummy;
+    }
+    asm volatile("" :: "r"(dummy));
+}
+{% endhighlight %}
+
+Not much going on here; we have a function that touches every byte in the mapped range starting at `MAP_BASE`. The seemingly
+useless parameter `zero` helps ensure that loads from the mapped range issue serially. Take a look at how we are using
+`zero` in the loop:
 
 [intel-whitepaper]: https://intel.github.io/optimization-zone/hardware/HWPrefetchTuning/#123-next-page-prefetcher-l1-npp
 [insn-wrmsr]: https://intel.github.io/SDM/instruction/WRMSR.html
