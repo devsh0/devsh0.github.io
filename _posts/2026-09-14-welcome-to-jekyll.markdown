@@ -75,8 +75,8 @@ itself, rather signing it so that it could be loaded by the kernel. More on that
 > respective field configuration.
 {: .note}
 
-On Linux, counting performance monitoring events is a bit simpler. Refer to the [`man pages`][perf-man] to see an example
-of `perf_event_open` API usage. In short, we need to do the following things in order:
+On Linux, counting performance monitoring events is a bit simpler. The [`man pages`][perf-man] include an example of how
+to use `perf_event_open`. For our measurements we need the following three things in order:
 
 1. Configure the events we want to count. Initially all counters will be disabled.
 2. Enable the counters. Here's where the IA32_PMCx registers start ticking.
@@ -213,8 +213,8 @@ Both L1 and L2 TLBs are partitioned based on the page size. L1 dTLB has a total 
 The iTLB is also partitioned: has 128 entries for 4k pages, 16 entries for 2M or 4M pages, and none for 1G pages. The
 STLB has 1536 entries shared between 4k and 2M pages and an additional 16 entries for 1G huge pages.
 
-STLB is not inclusive of the L1 TLBs. That means at any given instance, a page-table entry can be found in one of the L1
-TLBs, the STLB, or both.
+STLB is not inclusive of the L1 TLBs. That means at any given instance, a page-table entry exists in one of the L1 TLBs,
+the STLB, or both.
 
 For the purposes of this post, we don't need to dig any further into the geometry of SKX TLBs. It's time to run some
 experiments!
@@ -232,7 +232,7 @@ exists. If the workload below doesn't trigger page prefetches, we can safely con
 inline void touch_all_bytes(int zero) {
     u8* map_base = (u8*)MAP_BASE;
     u8 dummy = 0;
-    for (size_t i = 0; i < MAP_SIZE; i++) {
+    for (u64 i = 0; i < MAP_SIZE; i++) {
         dummy += map_base[i + zero];
         zero = zero & dummy;
     }
@@ -253,7 +253,7 @@ why in a moment.
 The last line is a common trick to avoid the compiler throw away our computation; It's falsely advertising that the inline
 asm uses the value of `dummy` computed in the loop and forcing the compiler to materialize `dummy` into a register.
 
-With `g++ -O2`, the code above compiles to:
+With `g++ -O2`, the loop in the workload compiles to:
 
 {%highlight assembly %}
 .loop:
@@ -274,16 +274,101 @@ events:
 DTLB_LOAD_MISSES.STLB_HIT           = 70
 MEM_INST_RETIRED.STLB_MISS_LOADS    = 1
 ```
-Over a few runs, the `DTLB_LOAD_MISSES.STLB_HIT` count fluctuates in the 50..80 band, but it never exceeds 80. That's already
-interesting: note that we walked through 1000 pages in the loop but `DTLB_LOAD_MISSES.STLB_HIT` is nowhere near 1000. That
-must imply one of the following:
+Over a few runs, the `DTLB_LOAD_MISSES.STLB_HIT` count fluctuates in the 50..80 band, never exceeding 80. That's already
+interesting: we walked through 1000 pages in the loop but `DTLB_LOAD_MISSES.STLB_HIT` is nowhere near 1000.
+`DTLB_LOAD_MISSES.STLB_HIT=70` means only 70 out of the 1000 PTE requests missed in dTLB and hit STLB. The obvious next
+question is what happened to rest of the 1000 - 70 = 930 fresh PTE requests that the loop might have initiated? There are
+two possible answers:
 
-1. Most dTLB load misses also miss in the STLB.
-2. There's a prefetcher prefilling either dTLB or STLB before demand arrives.
+1. They miss in the STLB too.
+2. They didn't miss dTLB.
 
-We can quickly rule out (1) because `MEM_INST_RETIRED.STLB_MISS_LOADS = 1`.
+We can quickly rule out (1) because `MEM_INST_RETIRED.STLB_MISS_LOADS = 1`. So that leaves us with (2): about 930 new PTE
+requests hit in the dTLB when the demand arrived. But that must mean that SKX has a prefetcher that's prefilling the dTLB
+with future PTEs. Yep! It's the next-page prefetcher in action.
 
-a prefetcher is prefilling the dTLB before demand arrives.
+> A subtle point that is easy to miss is that the prefetcher is loading entries into th dTLB. This doesn't automatically
+> prove or disprove that it's also prefilling STLB. In SKX, the STLB acts as a victim cache, i.e. entries that are
+> evicted from L1 TLBs are stored in the STLB. Thinking along those lines, it doesn't make much sense for the prefetcher
+> to prefill the STLB too, but I'd refrain from any speculations. Perhaps a carefully designed experiment can unveil that
+> secret, but that's not our focus in this post. We'd also not worry about the iTLB for now.
+{: .note}
+
+Microarchitecture explorations typically require careful use of statistics to extract signal buried in noise. Luckily in
+this case the signal is so strong that we can get away with sloppiness.
+
+Alright, we have established that SKX has a next-page prefetcher that prefills the dTLB. On to the next question!
+
+## What Triggers the Next-Page Prefetcher
+
+Something in the loop in `touch_all_bytes()` must have triggered the prefetch of page `X`. The most obvious guess is
+a load from page `X-1`. Question is, which load? Is it just a single load from a special offset? A set of loads? There
+are so many questions that could be asked. We need to design an experiment which narrows down the set of possibilities.
+We can imagine an experiment where we touch only the left half of each page (bytes in the range `page[0..2047]`, inclusive)
+and count the TLB misses. If we still see TLB miss numbers like in our first experiment, that'd mean accesses in the left
+half of the page triggers the prefetch. If we instead see TLB misses that add up to 1000 (or more), we can repeat the same
+experiment but this time with the right half of the page (bytes in the range `page[2048..4095]`, inclusive). A generic
+workload that accepts an `offset` and a `slice_length` can handle both cases:
+
+{%highlight cpp %}
+[[gnu::always_inline]]
+inline void touch_page_slice(u64 offset, u64 slice_length, int zero) {
+    u8 dummy = 0;
+    for (u64 p = 0; p < N_MAPPED_PAGES; p++) {
+        u8* page_base = (u8*)(MAP_BASE + p * PAGE_SIZE);
+        for (u64 i = offset; i < offset+slice_length; i++) {
+            dummy += page_base[i + zero];
+            zero &= dummy;
+        }
+    }
+    asm volatile("" :: "r"(dummy));
+}
+{% endhighlight %}
+
+When `touch_half_page()` is invoked with `offset=0, slice_length=2048`, it walks left half of each of the 1000 mapped
+pages. To walk the right half, we simply call it with `offset=2048, slice_length=2048`. Here are the results:
+
+```text
+First half:
+DTLB_LOAD_MISSES.STLB_HIT=33
+MEM_INST_RETIRED.STLB_MISS_LOADS=1001
+
+Second half:
+DTLB_LOAD_MISSES.STLB_HIT=32
+MEM_INST_RETIRED.STLB_MISS_LOADS=2
+```
+
+Walking the left half generates `MEM_INST_RETIRED.STLB_MISS_LOADS=1001`. The most sensible explanation is that the NPP
+was not triggered while walking the left half, thus every new PTE request missed in the dTLB. These misses then made it
+to the STLB and they missed there too.
+
+Comparatively, walking the right half of each page is not bad at all. In fact this time the prefetcher clearly did trigger.
+We can keep splitting the slice that triggers the prefetch binary-search style and further narrow the access range. The
+table below shows the results for SKX:
+
+| Left half    | Right half   | Slice length | Pretech Triggered By |
+|--------------|--------------|--------------|----------------------|
+| [0..2047]    | [2048..4095] | 2048         | Right Half           |
+| [2048..3071] | [3072..4095] | 1024         | Right Half           |
+| [3072..3583] | [3584..4095] | 512          | Left Half            |
+| [3072..3327] | [3328..3583] | 256          | Right Half           |
+| [3328..3455] | [3456..3583] | 128          | Left Half            |
+| [3328..3391] | [3392..3455] | 64           | Neither Half         |
+
+Hmm, neither left nor right slice of the last row triggers the prefetch. But we do know that walking `page[3328..3455]`
+does work. So here's the new plan: we start our walk at offset 3328 but not stop at 3391, rather keep pushing the right
+edge one byte at a time until we cause the prefetcher to trigger. For example, we'd walk `page[3328..3392]`. If that
+didn't trigger NPP, we'd walk `page[3328..3393]` and so forth. We expect that the prefetcher would trigger before we reach
+`page[3328..3455]`. We can reuse `touch_page_slice()` here too; just call it with `offset=3328` and `slice_length=65,66,...`.
+It doesn't take long to identify the slice that triggers the prefetch: the sneaky `page[3328..3392]`. Invoking
+`touch_page_slice(3328, 65, zero)` immediately triggers the prefetch. Now, 3392 is the first byte in the 53rd cache line
+(counting zero-indexed) within a page. Does that mean accessing the 53rd cache line triggers the prefetch? But that can't
+be true because we accessed every single byte in the 53rd line and verified no prefetches (see "Right half" of the last
+row in the table). Offset 3328 also starts the 52nd cache line (counting zero-indexed) within a page. So we also know that
+accessing every byte in the 52nd cache line also doesn't trigger prefetch (see the "Left half" of the last row in the table).
+That leaves us with only the following conclusion: loads must cross from 52nd cache line into the 53rd cache line to trigger
+the prefetch.
+
 
 [intel-whitepaper]: https://intel.github.io/optimization-zone/hardware/HWPrefetchTuning/#123-next-page-prefetcher-l1-npp
 [insn-wrmsr]: https://intel.github.io/SDM/instruction/WRMSR.html
