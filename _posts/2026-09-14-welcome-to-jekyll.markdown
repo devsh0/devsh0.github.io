@@ -61,21 +61,18 @@ encouraged to do your own experiments and share the results.
 ## A Word on Performance Monitoring on Intel Platforms
 
 Documenting the many details of performance monitoring on various platforms deserves a post of its own, and a fairly long
-one at that (I'm planning to write an article, hopefully soon). For the sake of simplicity, we'd only focus on Linux
-in this post. Linux allows configuring performance monitoring events via the `perf_event_open` syscall. That's what I will
-be using in my experiments as well but generally speaking, we don't need special system APIs to access PMU counters. At
-least on Intel platforms, we only need the ability to write a set of performance monitoring MSRs (usually only the IA32_PERFEVTSELx
-MSRs) and read the counters back from a set of corresponding IA32_PMCx MSRs. [`WRMSR`][insn-wrmsr] and [`RDMSR`][insn-rdmsr]
-require Ring0 access so if you're on Windows, you might need to [write a kernel-mode driver][win-driver] and use [`__readmsr`][win-rdmsr]
-and [`__writemsr`] [win-wrmsr] intrinsics to read/write the relevant MSRs. That said, the hard part of custom driver
-development on Windows isn't writing the driver itself, rather signing it so that it could be loaded by the kernel. More
-on that in a future blog post.
+one at that. For simplicity, we'd only focus on Linux in this post. Linux allows configuring performance monitoring events
+via the `perf_event_open` syscall. That's what I'll be using in my experiments as well but generally speaking, we don't
+need special system APIs to access PMU counters. At least on Intel platforms, we only need the ability to write a set of
+performance monitoring MSRs (usually only the IA32_PERFEVTSELx MSRs) and read the counters back from a set of corresponding
+IA32_PMCx MSRs. [`WRMSR`][insn-wrmsr] and [`RDMSR`][insn-rdmsr] require Ring0 access so if you're on Windows, you might
+need to [write a kernel-mode driver][win-driver] and use [`__readmsr`][win-rdmsr] and [`__writemsr`] [win-wrmsr] intrinsics
+to read/write the relevant MSRs. That said, the hard part of making custom drivers for Windows isn't writing the driver
+itself, rather signing it so that it could be loaded by the kernel. More on that in a future blog post.
 
 Refer to Vol 3B, Chapter 22 (PERFORMANCE MONITORING) of the Intel Software Developer's Manual to learn more about the layout
-and configurable fields of IA32_PERFEVTSELx. Also visit [perfmon-events][perfmon-events] for a list of named events and their
-respective field configuration. We typically only need to write IA32_PERFEVTSELx MSRs to configure event(s) for counting,
-but complex events may require writing additional MSRs. As stated, we read one of the IA32_PMCx MSRs to count how many
-times a configured event occurred.
+and configurable fields of IA32_PERFEVTSELx. Also see [perfmon-events][perfmon-events] for a list of named events and their
+respective field configuration.
 
 On Linux, counting performance monitoring events is a bit simpler. Refer to the [`man pages`][perf-man] to see an example
 of `perf_event_open` API usage. In short, we need to do the following things in order:
