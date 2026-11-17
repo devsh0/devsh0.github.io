@@ -569,6 +569,7 @@ Looks like the NPP prefetches only one page ahead. Cool, no complaints there!
 Does the prefetcher work in backward direction too? This is the last piece of the puzzle and fortunately very easy to test:
 just walk the mapped range backwards. If you get close to 1000 misses the answer is no, otherwise yes. Here's the workload:
 
+{%highlight cpp %}
 [[gnu::always_inline]]
 inline void touch_bytes_backward(int zero) {
     u8* map_base = (u8*)MAP_BASE;
@@ -579,6 +580,7 @@ inline void touch_bytes_backward(int zero) {
     }
     asm volatile("" :: "r"(dummy));
 }
+{% endhighlight %}
 
 ...and the results:
 
