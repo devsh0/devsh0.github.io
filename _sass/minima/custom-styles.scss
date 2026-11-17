@@ -1,11 +1,3 @@
-// Reader-selectable theme.
-//
-// The `auto` skin emits `--minima-*` custom properties (light by default, dark
-// under `prefers-color-scheme`). Here we bind those properties to an explicit
-// `data-theme` attribute on <html> so a reader's Light/Dark choice wins over the
-// OS preference. Colors are reused from minima's own computed `$lm-*` / `$dm-*`
-// values, so there is a single source of truth for the palette.
-
 :root[data-theme="light"] {
   --minima-brand-color:           #{$lm-brand-color};
   --minima-brand-color-light:     #{$lm-brand-color-light};
@@ -107,7 +99,6 @@
   }
 }
 
-// On narrow screens minima stacks nav items vertically; keep the popover in flow.
 @include media-query($on-medium) {
   .theme-menu {
     display: block;
@@ -128,12 +119,8 @@
 }
 
 // Note callouts: write a blockquote followed by `{: .note}` on the next line.
-//
 //   > **Note:** Short aside here.
 //   {: .note}
-//
-// Colors come from the --minima-* properties so the box follows the reader's
-// Light/Dark choice. Overrides minima's large, italic, dimmed blockquote style.
 blockquote.note {
   color: var(--minima-text-color);
   font-size: inherit;

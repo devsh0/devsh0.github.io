@@ -1,8 +1,4 @@
-/* Custom giscus theme matched to minima's light skin.
- *
- * Imports giscus's hosted base light theme, then overrides the surface colors
- * with minima's $lm-* palette so the comment section blends into the post page.
- * Values mirror _sass/minima/skins/auto.scss (light mode). */
+/* Custom giscus theme matched to minima's light skin*/
 @import url("https://giscus.app/themes/light.css");
 
 main {
@@ -22,16 +18,11 @@ main {
     Arial, sans-serif;
 }
 
-/* Hide reactions on top-level comments (and the GitHub-disabled upvote button)
-   and on replies. Main-post reactions are turned off separately via
-   data-reactions-enabled="0". */
 .gsc-comment-reactions,
 .gsc-reply-reactions {
   display: none !important;
 }
 
-/* With reactions hidden, the footer's space-between collapses the "K replies"
-   count to the left. Keep it right-aligned regardless of siblings. */
 .gsc-comment-replies-count {
   margin-left: auto;
 }

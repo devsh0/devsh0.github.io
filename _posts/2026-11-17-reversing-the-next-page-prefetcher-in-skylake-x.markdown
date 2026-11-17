@@ -1,8 +1,8 @@
 ---
 layout: post
-title:  "Next-Page Prefetcher in Skylake-X"
-date:   2026-10-02 23:52:25 +0530
-categories: intel microarchitecture
+title:  "Reverse Engineering the Next-Page Prefetcher in Skylake-X"
+date:   2026-11-17 21:30:25 +0530
+categories: microarchitecture, intel, computer-architecture
 ---
 
 ## Introduction
@@ -347,8 +347,8 @@ What about walking the right half:
 
 ```text
 Right half:
-DTLB_LOAD_MISSES.STLB_HIT=32
-MEM_INST_RETIRED.STLB_MISS_LOADS=2
+DTLB_LOAD_MISSES.STLB_HIT           = 32
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 2
 ```
 
 Comparatively, walking the right half of each page is not bad at all. In fact this time the prefetcher clearly did trigger.
@@ -377,8 +377,234 @@ a page. Ok, does that mean accessing the 53rd cache line triggers the prefetch? 
 every single byte in the 53rd line and verified no prefetches (see "Right half" of the last row in the table). Moreover,
 offset 3328 starts the 52nd cache line (counting zero-indexed) within a page, so we also know that accessing every byte
 in the 52nd cache line also doesn't trigger the prefetch (see the "Left half" of the last row in the table). Could it be
-that for the prefetcher to trigger, subsequent loads must cross the 52nd cache line into the 53rd cache line?
+that for the prefetcher to trigger, subsequent loads must cross the 52nd cache line into the 53rd cache line? If the
+prefetch condition truly is as simple as "two subsequent loads, one from cache line 52, the next from cache line 53",
+then the following must hold:
 
+1. Touching every byte in a page except any from cache line 52 will not trigger prefetch.
+2. Touching every byte in a page except any from cache line 53 will not trigger prefetch.
+3. Two back-to-back loads, the first loading any byte in cache line 52 and the second loading any byte in cache line 53
+   will be sufficient to trigger prefetch.
+
+To test these hypothesis, we need a new workload that touches every byte in a page except a few. This would work:  
+
+{%highlight cpp %}
+[[gnu::always_inline]]
+inline void touch_page_with_hole(u64 hole_offset, u64 hole_length, int zero) {
+    u8 dummy = 0;
+    u64 repeat_idx = hole_offset == 0 ? 0 : hole_offset - 1;
+    for (u64 p = 0; p < N_MAPPED_PAGES; p++) {
+        u8* page_base = (u8*)(MAP_BASE + p * PAGE_SIZE);
+        for (u64 i = 0; i < PAGE_SIZE; i++) {
+            u64 outside_hole = (i - hole_offset) >= hole_length;
+            u64 idx = (i & -outside_hole) | (repeat_idx & (outside_hole - 1));
+            dummy += page_base[idx + zero];
+            zero &= dummy;
+        }
+    }
+    asm volatile("" :: "r"(dummy));
+}
+{% endhighlight %}
+
+The strange looking trick to compute `idx` in the inner loop helps avoid a branch in the probe path. Yeah, we are also
+banking on the fact that the branch predictor would do just fine when we're done walking a page in the inner loop and
+jump back to the outer loop. Strictly speaking, a branch mispredict shouldn't mess with TLBs in a way that affects our
+results but in general, eliminating noise sources to the best of your ability is a good idea with these kind of experiments.
+Aside from that there's not much going on here. We are skipping the range `page[hole_offset, hole_offset+hole_length]`
+and touching every other byte in the page. When `i` falls within the skipped range, we simply redirect the load to
+`hole_offset - 1`.
+
+Ok so what are the results like if we skip cache line 52 and 53, i.e. range `page[3328, 3391]` and `page[3392, 3456]`:
+
+```text
+Skipping 52nd cache line (touch_page_with_hole(3328, 64, zero)):
+DTLB_LOAD_MISSES.STLB_HIT           = 63
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 1000
+
+Skipping 53rd cache line (touch_page_with_hole(3392, 64, zero)):
+DTLB_LOAD_MISSES.STLB_HIT           = 66
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 1000
+```
+
+`MEM_INST_RETIRED.STLB_MISS_LOADS = 1000` for both cases. This verifies (1) and (2) from our list of hypotheses. We can
+test (3) by calling `touch_page_slice` with `offset = 3391` and `slice_length = 2`. Here are the results:
+
+```text
+Load from cache line 52 and 53:
+DTLB_LOAD_MISSES.STLB_HIT           = 4
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 3
+```
+
+As expected, merely touching a single byte in each of 52nd and 53rd cache lines engages the prefetcher. Now admittedly
+the experiment doesn't prove the "any byte in either cache line" part; we've only shown that loading last byte in cache
+line 52 followed by the load of first byte in cache line 53 triggers the prefetch, but you can easily verify that by
+tweaking the parameters of `touch_page_with_hole`. For example, `hole_offset = 3329` and `hole_length = 126` touches first
+byte of line 52 and last byte of line 53, skipping everything in-between. This still triggers prefetch. To limit the size
+of this post, I'll leave out certain details like that from here on after. I'd be happy to fill in the gaps in the comment
+section if you have questions.
+
+Note that for the prefetcher to trigger, load from 52nd cache line must execute before the load from 53rd cache line
+(unless the prefetcher is bidirectional, but we'll see about that in a moment). This is why it was crucial to introduce
+a dependency chain that throttles out-of-order execution of loads from the page.
+
+If you're wondering why would Intel design the prefetcher with such a thin trigger condition, you're not alone. I had the
+same exact question. I mean, triggering prefetch when loads get closer and closer to the next page makes sense. But why
+put all your bets on crossing just the 52nd cache line?! It'd make more sense if any couple of accesses beyond a threshold
+triggered the prefetch. Peter Cordes (yeah, [that Peter Cordes][peter-cordes-profile]) had a [brilliant answer][peter-cordes-answer]
+on why this makes sense.
+
+## What About Stores?
+
+Good question. All our experiments so far only used loads. A sane person would think stores shouldn't behave any different.
+But to my surprise, stores don't seem to trigger prefetches. If you're browsing the [full source][naiya] on GitHub you'd
+notice that we are faulting the mapped range with loads. That choice is deliberate: we're intentionally mapping every
+virtual page in the mapped range to the physical zero page. This reduces cache footprint, and potentially restricts one
+more source of noise.
+
+We cannot keep doing this for this next experiment, though; we don't want page faults in the probe path. So we switch to
+faulting with stores before we start the experiment. With that out of the way, here's the kernel we'll use to verify no
+prefetch on stores:
+
+{%highlight cpp %}
+[[gnu::always_inline]]
+inline void touch_with_stores(int zero) {
+    u8* map_base = (u8*)MAP_BASE;
+    for (u64 i = 0; i < MAP_SIZE; i++) {
+        map_base[i + zero] = i;
+        zero *= zero;
+    }
+}
+{% endhighlight %}
+
+With this we again have `MEM_INST_RETIRED.STLB_MISS_STORES = 1000`. Note that this time we are measuring STLB misses on
+stores. You can verify that each of these misses start at least one page-walk by counting `DTLB_STORE_MISSES.WALK_COMPLETED`
+along with `MEM_INST_RETIRED.STLB_MISS_STORES`. That rules out the possibility of dTLB hits and a last-level TLB (other than
+STLB) catching all the misses from STLB.
+
+## How Many PTEs are Prefetched
+
+We have established that the next-page prefetcher prefetches at least one future PTE. Let's figure out how many future
+PTEs are prefetched _exactly_. We'll use the following workload for this:
+
+{%highlight cpp %}
+void how_many_pages_prefetched(int future_limit, int zero) {
+    u8 dummy = 0;
+    int poke_limit = 8;
+    for (int p = 0; p < poke_limit; p++) {
+        u8* page_base = (u8*)(MAP_BASE + p * PAGE_SIZE);
+        dummy += page_base[3391 + zero];
+        zero &= dummy;
+        dummy += page_base[3392 + zero];
+        zero &= dummy;
+    }
+    for (int i = 0; i < future_limit; i++) {
+        u8* page_base = (u8*)(MAP_BASE + (i + poke_limit) * PAGE_SIZE);
+        dummy += page_base[zero];
+        zero &= dummy;
+    }
+    asm volatile("" :: "r"(dummy));
+}
+{% endhighlight %}
+
+The idea is to "heat up" the prefetcher by crossing 52nd cache line in the first `poke_limit` pages — that's what the first
+loop does — then load first byte of `future_limit` pages beyond `poke_limit` in the second loop. We'll call this function
+repeatedly, each time increasing `future_limit` by 1, and count the TLB misses. We can get a baseline with `future_limit = 0`
+first:
+
+```text
+Run 1:
+DTLB_LOAD_MISSES.STLB_HIT           = 1
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 1
+
+Run 2:
+DTLB_LOAD_MISSES.STLB_HIT           = 2
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 1
+
+Run 3:
+DTLB_LOAD_MISSES.STLB_HIT           = 0
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 3
+
+...
+```
+
+Over many runs, STLB miss baseline fluctuates between 1 and 3, but it never seems to exceed 3. Alright, we can work with that.
+Now let's try `future_limit = 1`.
+
+```text
+Run 1:
+DTLB_LOAD_MISSES.STLB_HIT           = 0
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 3
+
+Run 2:
+DTLB_LOAD_MISSES.STLB_HIT           = 1
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 2
+
+Run 3:
+DTLB_LOAD_MISSES.STLB_HIT           = 1
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 2
+
+...
+```
+
+Yep, expected! The last load in the heater must've triggered the prefetch for page at `poke_limit`, so `future_limit = 1`
+shouldn't increase the number of observed misses. What about `future_limit = 2`?
+
+```text
+Run 1:
+DTLB_LOAD_MISSES.STLB_HIT           = 0
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 4
+
+Run 2:
+DTLB_LOAD_MISSES.STLB_HIT           = 0
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 5
+
+Run 3:
+DTLB_LOAD_MISSES.STLB_HIT           = 1
+MEM_INST_RETIRED.STLB_MISS_LOADS    = 4
+
+...
+```
+
+Looks like the NPP prefetches only one page ahead. Cool, not gonna complain!
+
+## Prefetch Direction
+
+Does the prefetcher work in backward direction too? This is the last piece of the puzzle and fortunately very easy to test.
+Just walk the mapped range backwards, if you get close to 1000 misses the answer is no, otherwise yes. Here's the workload:
+
+[[gnu::always_inline]]
+inline void touch_bytes_backward(int zero) {
+    u8* map_base = (u8*)MAP_BASE;
+    u8 dummy = 0;
+    for (u64 i = 1; i <= MAP_SIZE; i++) {
+        dummy += map_base[MAP_SIZE - i + zero];
+        zero &= dummy;
+    }
+    asm volatile("" :: "r"(dummy));
+}
+
+...and the results:
+
+```text
+DTLB_LOAD_MISSES.STLB_HIT               = 69
+MEM_INST_RETIRED.STLB_MISS_LOADS        = 1000
+```
+
+This is a bit shocking. If you recall from the "Introduction" section, Intel manuals seem to suggest the next-page prefetcher
+triggers while walking "upwards" (what I call forward) or "downward" (what I call backward). This behavior is documented
+for both Ivy Bridge and Redwood Cove...but that's not what we see for SKX. I don't really have any theories explaining this
+disconnect between SKX and the other uarchs, if you do feel free to share in the comment section.
+
+## So Where Can I Use This Knowledge
+
+If you're a software developer looking for a cool new way of optimizing program performance, likely nowhere. Optimizing
+programs for a single microarchitecture from a single CPU vendor is almost always a bad idea for anything with half-life
+beyond next Friday. My goal here is to share how I attempt reversing undocumented machine behavior and invite fellow nerds
+to kick-start discussions that hopefully help me or somebody else learn something new.
+
+That said, if you're one of those weirdos who can manage to care only about one type of machine (Skylake-X to be precise),
+you may find the details interesting from a practical PoV. Either way, I'm tired. This is too much writing for a first
+blog post. 👋
 
 [intel-whitepaper]: https://intel.github.io/optimization-zone/hardware/HWPrefetchTuning/#123-next-page-prefetcher-l1-npp
 [insn-wrmsr]: https://intel.github.io/SDM/instruction/WRMSR.html
@@ -393,3 +619,5 @@ that for the prefetcher to trigger, subsequent loads must cross the 52nd cache l
 [evt-miss-loads]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-MEM_INST_RETIRED.STLB_MISS_LOADS
 [evt-miss-stores]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-MEM_INST_RETIRED.STLB_MISS_STORES
 [evt-stlb-hit]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-DTLB_LOAD_MISSES.STLB_HIT
+[peter-cordes-profile]: https://stackoverflow.com/users/peter-cordes
+[peter-cordes-answer]: https://stackoverflow.com/a/80011111/14180973

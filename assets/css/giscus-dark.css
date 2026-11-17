@@ -1,9 +1,4 @@
-/* Custom giscus theme matched to minima's dark skin.
- *
- * Imports giscus's hosted base dark theme (so every Primer variable stays
- * defined), then overrides the surface colors with minima's $dm-* palette so
- * the comment section reads as part of the post page rather than a GitHub box.
- * Values mirror _sass/minima/skins/auto.scss (dark mode). */
+/* Custom giscus theme matched to minima's dark skin.*/
 @import url("https://giscus.app/themes/dark.css");
 
 main {
@@ -23,16 +18,12 @@ main {
     Arial, sans-serif;
 }
 
-/* Hide reactions on top-level comments (and the GitHub-disabled upvote button)
-   and on replies. Main-post reactions are turned off separately via
-   data-reactions-enabled="0". */
+/* Hide reactions on top-level comments and on replies */
 .gsc-comment-reactions,
 .gsc-reply-reactions {
   display: none !important;
 }
 
-/* With reactions hidden, the footer's space-between collapses the "K replies"
-   count to the left. Keep it right-aligned regardless of siblings. */
 .gsc-comment-replies-count {
   margin-left: auto;
 }
