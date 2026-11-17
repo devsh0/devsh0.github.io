@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Reverse Engineering the Next-Page Prefetcher in Skylake-X"
+title:  "Reversing the Next-Page Prefetcher in Skylake-X"
 date:   2026-11-17 21:30:25 +0530
 categories: microarchitecture, intel, computer-architecture
 ---
@@ -32,9 +32,8 @@ on the other hand is very old; It launched back in 2012 and was discontinued by 
 raises the question, what happened in-between? Did every microarchitecture after IVB include a next-page prefetcher?
 
 It's unlikely that the details remain unchanged from one microarchitecture to the next but as it turns out, I recently
-got access to a Skylake-X machine that I didn't have to pay a single dime for. Given the setup, it's only natural I got
-nerd-sniped by a seemingly innocent question that nobody knows the answer to. And that's how the week-long quest to unearth
-the Skylake-X next-page prefetcher began.
+got unlimited access to a Skylake-X machine that I didn't have to pay a single dime for. Given the setup, it's only natural
+I got nerd-sniped into reversing the next-page prefetcher...and that's what this post is about. I hope you enjoy it!
 
 ## So What's a Prefetcher
 
@@ -48,7 +47,7 @@ in predictable manner. These by no means are the only three kind; a high-perform
 of prefetchers, some of which are documented in [this][intel-whitepaper] Intel whitepaper.
 
 Prefetchers that are required to act fast are logically simple and tend not to cross page boundaries because that may complicate
-things with, e.g. page faults and page walks on TLB misses etc. For example, the next-line prefetcher is supposed to fetch
+things with, e.g. page faults and page walks on TLB misses. For example, the next-line prefetcher is supposed to fetch
 the next cache line if the accesses are sequential, but if the next cache line sits in a different page it may decide not
 to prefetch at all. Next-page prefetchers are slightly different in that regard; they prefetch the next page table entry
 (PTE) into the TLB. They have to work across page boundaries by design.
@@ -61,9 +60,9 @@ In this post I'll try to answer the following questions:
 4. Where does the NPP load future PTEs?
 5. What's the direction of the prefetch? Forward-only? Backward-only (that'd be weird!)? Both?
 
-But before that, let's prepare the stage for our experiments.
+But before we start, let's prepare the stage for our experiments.
 
-## A Word on Performance Monitoring on Linux
+## Setting-up Linux for Experiments
 
 If you don't intend to run the experiments described in this post, you can skip this part. 
 
@@ -75,12 +74,11 @@ MSRs (usually only the `IA32_PERFEVTSELx` MSRs) and read the counters back from 
 [`WRMSR`][insn-wrmsr] and [`RDMSR`][insn-rdmsr] require Ring0 access so if you're on Windows, you'd have to
 [write a kernel-mode driver][win-driver] and use [`__readmsr`][win-rdmsr]/[`__writemsr`] [win-wrmsr] intrinsics to read/write
 the relevant MSRs. That said, the hard part of making custom drivers for Windows isn't writing the driver itself, rather
-convincing the kernel to load your unsigned driver. More on that in a future blog post.
+convincing the kernel to load your driver. More on that in a future blog post.
 
-A generic performance monitoring tool that allows reading PMU counters (e.g. perf, Vtune) could also work. I'd stick to
-`perf_event_open` because Vtune etc. typically have a higher noise floor compared to direct `perf_event_open` calls. The
-[`man page`][perf-man] includes an example of how to use `perf_event_open`. For our experimenting we need three things
-in order:
+Performance monitoring tools that allow reading PMU counters (e.g. perf, VTune) may also work. I'd stick to `perf_event_open`
+because it allows better control over the exact segment of code I need to measure. The [`manpage`][perf-man] includes an
+example of how to use `perf_event_open`. For our experimenting we need three things in order:
 
 1. Configuring the events we want to count. Initially all counters will be disabled.
 2. Enabling the counters and running the workload. Here's where the `IA32_PMCx` counters start ticking.
@@ -133,7 +131,7 @@ void configure_event_group(PerfContext& ctx) {
 }
 {% endhighlight %}
 
-Full source code of every experiment, data structure, and helpers used in this article can be found on [github][naiya].
+Full source code of every experiment, data structure, and helpers used in this article can be found on [github][github-gist].
 The `group_fd` identifies the event group that you configure via `perf_event_open`. You can use that `group_fd` to perform
 certain operations on the event group, like enabling or disabling the counters. That's what we're going to do next: enable
 the counters with `start_counters` which is defined like this:
@@ -192,20 +190,21 @@ them by setting [`perf_event_paranoid`][perf-paranoid] to `0` or `-1`:
 echo "-1" | sudo tee /proc/sys/kernel/perf_event_paranoid
 {% endhighlight %}
 
-Now we have all the pieces required to start monitoring hardware events. Throughout this post we'd only work with the
-following events:
+You may also need to [disable THP][disable-thp] and pin the calling thread to a core if there's too much going on in your
+machine.
+
+Now we have all the pieces required to start monitoring hardware events. Throughout this post we'd work with the following events:
 
 | Event                                                | Config | Description                                               |
 |------------------------------------------------------|--------|-----------------------------------------------------------|
-| [CPU_CLK_UNHALTED.THREAD_P][evt-core-cycles]         | 0x003C | Cycles passed in the main clock driving the core.         |
 | [MEM_INST_RETIRED.STLB_MISS_LOADS][evt-miss-loads]   | 0x11D0 | Retired load instructions that start a miss in the STLB.  |
 | [MEM_INST_RETIRED.STLB_MISS_STORES][evt-miss-stores] | 0x12D0 | Retired store instructions that start a miss in the STLB. |
 | [DTLB_LOAD_MISSES.STLB_HIT][evt-stlb-hit]            | 0x2008 | Loads that miss the data TLB and hit the unified STLB.    |
 
 It's note hard to observe that the event configs are of the form 0x\<Umask>\<EventSel>, where Umask and EventSel are coming
-straight from the "PROGRAMMING INFO" column of the corresponding event in the perfmon website (the 'H' suffix is Intel's
-way of saying the number is given in hexadecimal). Not all event configs are derived this way, but it's enough for the
-simple ones we're gonna use here.
+straight from the "PROGRAMMING INFO" column of the corresponding event in the [perfmon website][perfmon-events] (the 'H'
+suffix is Intel's way of saying the number is given in hexadecimal). Not all event configs are derived this way, but it's
+enough for the simple ones we're gonna use here.
 
 ## TLB Hierarchy in Skylake-X
 
@@ -216,21 +215,19 @@ data PTEs go to the same STLB.
 Both L1 and L2 TLBs are partitioned based on the page size. L1 dTLB has a total of 100 entries: 64 reserved for 4k pages,
 32 for 2M or 4M pages, and 4 for 1G pages. The dTLB is 4-way set associative so each set can hold 4 page-table entries.
 The iTLB is also partitioned: has 128 entries for 4k pages, 16 entries for 2M or 4M pages, and none for 1G pages. The
-STLB has 1536 entries shared between 4k and 2M pages and an additional 16 entries for 1G huge pages.
-
-STLB is not inclusive of the L1 TLBs. That means at any given instance, a page-table entry may exist in one of the L1 TLBs,
-the STLB, or both (unless it's exclusive, but that's not easy to figure out).
+STLB has 1536 entries shared between 4k and 2M pages and an additional 16 entries for 1G huge pages. STLB is not inclusive
+of the L1 TLBs. That means at any given instance, a page-table entry may exist in one of the L1 TLBs, the STLB, or both.
 
 For the purposes of this post, we don't need to dig any further into the geometry of SKX TLBs. It's time to run some
 experiments!
 
-## Experiments and Findings
+## Does it Exist
 
 The very first question that we should ask is whether the next-page prefetcher exists in SKX at all. NPPs seem like a
 good idea in general; given that Intel had the silicon budget to include one in Ivy Bridge, we expect the answer to be
 "Yes" in SKX too. To test this, we'll design a workload that walks a mapped range of 1000 4K pages sequentially and
 measure how many TLB misses we get. I cannot imagine a more favourable access pattern for the NPP to kick in if it truly
-does exist. If the workload below doesn't trigger the page prefetcher, we can safely conclude that SKX doesn't have one.
+exists. If the workload below doesn't trigger the prefetcher, we can safely conclude that SKX doesn't have one.
 
 {%highlight cpp %}
 [[gnu::always_inline]]
@@ -277,7 +274,7 @@ we just discussed translates exactly to assembly too. Running the workload gives
 DTLB_LOAD_MISSES.STLB_HIT           = 70
 MEM_INST_RETIRED.STLB_MISS_LOADS    = 1
 ```
-Over a few runs `DTLB_LOAD_MISSES.STLB_HIT` count fluctuates in the 50..80 band, but never exceeds 80. That's already
+Over a few runs `DTLB_LOAD_MISSES.STLB_HIT` fluctuates between the 50..75 band, but never exceeds 75. That's already
 interesting: we walked through 1000 pages in the loop but `DTLB_LOAD_MISSES.STLB_HIT` is nowhere near 1000.
 `DTLB_LOAD_MISSES.STLB_HIT = 70` means only 70 out of the 1000 PTE requests missed in dTLB and hit STLB. The obvious next
 question is what happened to rest of the 1000 - 70 = 930 fresh PTE requests that the loop might have initiated? There are
@@ -294,7 +291,7 @@ that is allowed prefetch beyond page boundaries but as they say, if it quacks li
 > Subtle point that is easy to miss: the prefetcher is loading entries into th dTLB. This doesn't automatically
 > prove or disprove that it's also prefilling STLB. In SKX the STLB acts as a victim cache, i.e. entries that are
 > evicted from L1 TLBs are stored in the STLB. Thinking along those lines, it doesn't make much sense for the prefetcher
-> to prefill the STLB too, but I'd refrain from any speculations. Perhaps a carefully designed experiment can unveil that
+> to prefill the STLB too, but I'd refrain from such speculations. Perhaps a carefully designed experiment can unveil that
 > secret, but that's not my focus in this post. We'd also not worry about the iTLB for now.
 {: .note}
 
@@ -307,8 +304,8 @@ Alright, we have established that SKX has a next-page prefetcher that prefills t
 
 Something in the loop in `touch_all_bytes` must have triggered the next-page prefetch. The most obvious guess is a load
 from the previous page. Question is, which load? Is it just a single load from a special offset? A set of loads? There
-are so many questions that could be asked here...we need an experiment that narrows down the set of possibilities. We can
-imagine one that touches only the left half of each page (bytes in the range `page[0..2047]`, inclusive) and count the
+are so many questions that could be asked here...we need an experiment that narrows down the space of possibilities. We can
+imagine a workload that touches only the left half of each page (bytes in the range `page[0..2047]`, inclusive) and count the
 TLB misses. If we still see TLB miss numbers like in our first experiment, that'd mean accesses from the left half of the
 page triggers the prefetch. If we instead see TLB misses that add up to 1000 (or more), we can repeat the same experiment
 but this time touching the right half of the page (bytes in the range `page[2048..4095]`, inclusive). A generic workload
@@ -343,7 +340,7 @@ Walking the left half generated `MEM_INST_RETIRED.STLB_MISS_LOADS = 1001`. That'
 of pages we walked! The most sensible explanation is that the NPP did not trigger while walking the left half, thus every
 new PTE request missed in the dTLB. Those misses then made it to STLB and then missed there too.
 
-What about walking the right half:
+Alright, what about the right half? Here's the result from waking the right half:
 
 ```text
 Right half:
@@ -351,9 +348,9 @@ DTLB_LOAD_MISSES.STLB_HIT           = 32
 MEM_INST_RETIRED.STLB_MISS_LOADS    = 2
 ```
 
-Comparatively, walking the right half of each page is not bad at all. In fact this time the prefetcher clearly did trigger.
-We can keep splitting the slice that triggers prefetch binary-search style and further narrow the access range. The table
-below shows the results:
+Comparatively, walking the right half is not bad at all. In fact this time the prefetcher clearly did trigger. We can keep
+splitting the slice that triggers prefetch binary-search style and further narrow the access range. The table below shows
+the results:
 
 | Left half    | Right half   | Slice length | Pretech Triggered By |
 |--------------|--------------|--------------|----------------------|
@@ -386,7 +383,7 @@ then the following must hold:
 3. Two back-to-back loads, the first loading any byte in cache line 52 and the second loading any byte in cache line 53
    will be sufficient to trigger prefetch.
 
-To test these hypothesis, we need a new workload that touches every byte in a page except a few. This would work:  
+To test these hypotheses, we need a workload that touches every byte in a page except a few. This should work:  
 
 {%highlight cpp %}
 [[gnu::always_inline]]
@@ -414,7 +411,7 @@ Aside from that there's not much going on here. We are skipping the range `page[
 and touching every other byte in the page. When `i` falls within the skipped range, we simply redirect the load to
 `hole_offset - 1`.
 
-Ok so what are the results like if we skip cache line 52 and 53, i.e. range `page[3328, 3391]` and `page[3392, 3456]`:
+Ok so what are the results if we skip cache line 52 and 53, i.e. range `page[3328, 3391]` and `page[3392, 3456]`:
 
 ```text
 Skipping 52nd cache line (touch_page_with_hole(3328, 64, zero)):
@@ -440,30 +437,30 @@ the experiment doesn't prove the "any byte in either cache line" part; we've onl
 line 52 followed by the load of first byte in cache line 53 triggers the prefetch, but you can easily verify that by
 tweaking the parameters of `touch_page_with_hole`. For example, `hole_offset = 3329` and `hole_length = 126` touches first
 byte of line 52 and last byte of line 53, skipping everything in-between. This still triggers prefetch. To limit the size
-of this post, I'll leave out certain details like that from here on after. I'd be happy to fill in the gaps in the comment
+of this post, I'll leave out certain details like that from here on after. I'd be happy to fill those gaps in the comment
 section if you have questions.
 
 Note that for the prefetcher to trigger, load from 52nd cache line must execute before the load from 53rd cache line
-(unless the prefetcher is bidirectional, but we'll see about that in a moment). This is why it was crucial to introduce
-a dependency chain that throttles out-of-order execution of loads from the page.
+(unless the prefetcher is bidirectional, but we'll get to that in a minute). This is why it was crucial to introduce
+the dependency chain that throttles out-of-order execution of loads from the page.
 
 If you're wondering why would Intel design the prefetcher with such a thin trigger condition, you're not alone. I had the
 same exact question. I mean, triggering prefetch when loads get closer and closer to the next page makes sense. But why
 put all your bets on crossing just the 52nd cache line?! It'd make more sense if any couple of accesses beyond a threshold
 triggered the prefetch. Peter Cordes (yeah, [that Peter Cordes][peter-cordes-profile]) had a [brilliant answer][peter-cordes-answer]
-on why this makes sense.
+on why this makes sense. Go read it if you're interested.
 
 ## What About Stores?
 
-Good question. All our experiments so far only used loads. A sane person would think stores shouldn't behave any different.
-But to my surprise, stores don't seem to trigger prefetches. If you're browsing the [full source][naiya] on GitHub you'd
+Good question. Our experiments so far have only used loads. A sane person would think stores shouldn't behave any different.
+But to my surprise, stores don't seem to trigger prefetches. If you're browsing the [full source][github-gist] on GitHub you'd
 notice that we are faulting the mapped range with loads. That choice is deliberate: we're intentionally mapping every
 virtual page in the mapped range to the physical zero page. This reduces cache footprint, and potentially restricts one
 more source of noise.
 
 We cannot keep doing this for this next experiment, though; we don't want page faults in the probe path. So we switch to
-faulting with stores before we start the experiment. With that out of the way, here's the kernel we'll use to verify no
-prefetch on stores:
+faulting with stores before we start the experiment. That out of the way, here's the kernel we'll use to verify no prefetch
+on stores:
 
 {%highlight cpp %}
 [[gnu::always_inline]]
@@ -476,7 +473,7 @@ inline void touch_with_stores(int zero) {
 }
 {% endhighlight %}
 
-With this we again have `MEM_INST_RETIRED.STLB_MISS_STORES = 1000`. Note that this time we are measuring STLB misses on
+Running this produces `MEM_INST_RETIRED.STLB_MISS_STORES = 1000`. Note that this time we are measuring STLB misses on
 stores. You can verify that each of these misses start at least one page-walk by counting `DTLB_STORE_MISSES.WALK_COMPLETED`
 along with `MEM_INST_RETIRED.STLB_MISS_STORES`. That rules out the possibility of dTLB hits and a last-level TLB (other than
 STLB) catching all the misses from STLB.
@@ -527,8 +524,8 @@ MEM_INST_RETIRED.STLB_MISS_LOADS    = 3
 ...
 ```
 
-Over many runs, STLB miss baseline fluctuates between 1 and 3, but it never seems to exceed 3. Alright, we can work with that.
-Now let's try `future_limit = 1`.
+Over many runs, STLB miss baseline fluctuates between 1 and 3 but never seems to exceed 3. Alright, we can work with that.
+Now let's try `future_limit = 1`:
 
 ```text
 Run 1:
@@ -546,7 +543,7 @@ MEM_INST_RETIRED.STLB_MISS_LOADS    = 2
 ...
 ```
 
-Yep, expected! The last load in the heater must've triggered the prefetch for page at `poke_limit`, so `future_limit = 1`
+Yep, expected! The last load in the "heater" must've triggered the prefetch for page at `poke_limit`, so `future_limit = 1`
 shouldn't increase the number of observed misses. What about `future_limit = 2`?
 
 ```text
@@ -565,12 +562,12 @@ MEM_INST_RETIRED.STLB_MISS_LOADS    = 4
 ...
 ```
 
-Looks like the NPP prefetches only one page ahead. Cool, not gonna complain!
+Looks like the NPP prefetches only one page ahead. Cool, no complaints there!
 
 ## Prefetch Direction
 
-Does the prefetcher work in backward direction too? This is the last piece of the puzzle and fortunately very easy to test.
-Just walk the mapped range backwards, if you get close to 1000 misses the answer is no, otherwise yes. Here's the workload:
+Does the prefetcher work in backward direction too? This is the last piece of the puzzle and fortunately very easy to test:
+just walk the mapped range backwards. If you get close to 1000 misses the answer is no, otherwise yes. Here's the workload:
 
 [[gnu::always_inline]]
 inline void touch_bytes_backward(int zero) {
@@ -592,19 +589,19 @@ MEM_INST_RETIRED.STLB_MISS_LOADS        = 1000
 
 This is a bit shocking. If you recall from the "Introduction" section, Intel manuals seem to suggest the next-page prefetcher
 triggers while walking "upwards" (what I call forward) or "downward" (what I call backward). This behavior is documented
-for both Ivy Bridge and Redwood Cove...but that's not what we see for SKX. I don't really have any theories explaining this
-disconnect between SKX and the other uarchs, if you do feel free to share in the comment section.
+for both Ivy Bridge and Redwood Cove...but that's not what we see for SKX. I don't have any theories explaining this disconnect
+between SKX and the other uarchs, if you do feel free to share in the comment section.
 
 ## So Where Can I Use This Knowledge
 
-If you're a software developer looking for a cool new way of optimizing program performance, likely nowhere. Optimizing
+If you're a software developer looking for a cool new way of optimizing program performance, probably nowhere. Optimizing
 programs for a single microarchitecture from a single CPU vendor is almost always a bad idea for anything with half-life
 beyond next Friday. My goal here is to share how I attempt reversing undocumented machine behavior and invite fellow nerds
 to kick-start discussions that hopefully help me or somebody else learn something new.
 
 That said, if you're one of those weirdos who can manage to care only about one type of machine (Skylake-X to be precise),
 you may find the details interesting from a practical PoV. Either way, I'm tired. This is too much writing for a first
-blog post. 👋
+post. 👋
 
 [intel-whitepaper]: https://intel.github.io/optimization-zone/hardware/HWPrefetchTuning/#123-next-page-prefetcher-l1-npp
 [insn-wrmsr]: https://intel.github.io/SDM/instruction/WRMSR.html
@@ -613,6 +610,7 @@ blog post. 👋
 [win-rdmsr]: https://learn.microsoft.com/en-us/cpp/intrinsics/readmsr
 [win-wrmsr]: https://learn.microsoft.com/en-us/cpp/intrinsics/writemsr
 [perf-man]: https://man7.org/linux/man-pages/man2/perf_event_open.2.html
+[disable-thp]: https://access.redhat.com/solutions/46111
 [perfmon-events]: https://perfmon-events.intel.com
 [perf-paranoid]: https://www.kernel.org/doc/html/latest/admin-guide/perf-security.html#unprivileged-users
 [evt-core-cycles]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-CPU_CLK_UNHALTED.THREAD_P
@@ -621,3 +619,4 @@ blog post. 👋
 [evt-stlb-hit]: https://perfmon-events.intel.com/platforms/skylakex/core-events/core/?h=skylak#event-DTLB_LOAD_MISSES.STLB_HIT
 [peter-cordes-profile]: https://stackoverflow.com/users/peter-cordes
 [peter-cordes-answer]: https://stackoverflow.com/a/80011111/14180973
+[github-gist]: https://gist.github.com/devsh0/66fea1019aee8eda54925ee75b73852a
