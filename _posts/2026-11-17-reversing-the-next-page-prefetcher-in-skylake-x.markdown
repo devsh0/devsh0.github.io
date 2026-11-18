@@ -78,7 +78,7 @@ convincing the kernel to load your driver. More on that in a future blog post.
 
 Performance monitoring tools that allow reading PMU counters (e.g. perf, VTune) may also work. I'd stick to `perf_event_open`
 because it allows better control over the exact segment of code I need to measure. The [`manpage`][perf-man] includes an
-example of how to use `perf_event_open`. For our experimenting we need three things in order:
+example of how to use `perf_event_open`. For our experiments we need three things in order:
 
 1. Configuring the events we want to count. Initially all counters will be disabled.
 2. Enabling the counters and running the workload. Here's where the `IA32_PMCx` counters start ticking.
@@ -480,8 +480,9 @@ STLB) catching all the misses from STLB.
 
 ## How Many PTEs are Prefetched
 
-We have established that the next-page prefetcher prefetches at least one future PTE. Let's figure out how many future
-PTEs are prefetched _exactly_. We'll use the following workload for this:
+We have established that the next-page prefetcher prefetches at least one future PTE. We shouldn't expect it to load more
+than one page ahead; it's called _next_-page prefetcher for a reason. But let's verify that with this simple workload so
+that there are no doubts:
 
 {%highlight cpp %}
 void how_many_pages_prefetched(int future_limit, int zero) {
