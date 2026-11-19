@@ -289,10 +289,8 @@ with future PTEs. Yep! It's the next-page prefetcher in action. Well, strictly s
 that is allowed prefetch beyond page boundaries but as they say, if it quacks like a duck, it's the next-page prefetcher!
 
 > Subtle point that is easy to miss: the prefetcher is loading entries into th dTLB. This doesn't automatically
-> prove or disprove that it's also prefilling STLB. In SKX the STLB acts as a victim cache, i.e. entries that are
-> evicted from L1 TLBs are stored in the STLB. Thinking along those lines, it doesn't make much sense for the prefetcher
-> to prefill the STLB too, but I'd refrain from such speculations. Perhaps a carefully designed experiment can unveil that
-> secret, but that's not my focus in this post. We'd also not worry about the iTLB for now.
+> prove or disprove that it's also prefilling STLB. Perhaps a carefully designed experiment can unveil that secret,
+> but that's not my focus in this post. We'd also not worry about the iTLB for now.
 {: .note}
 
 Microarchitecture explorations typically require careful use of statistics to extract signal buried in noise. Luckily in
@@ -481,8 +479,7 @@ STLB) catching all the misses from STLB.
 ## How Many PTEs are Prefetched
 
 We have established that the next-page prefetcher prefetches at least one future PTE. We shouldn't expect it to load more
-than one page ahead; it's called _next_-page prefetcher for a reason. But let's verify that with this simple workload so
-that there are no doubts:
+than one page ahead; it's called _next_-page prefetcher for a reason. But let's verify that with this simple workload:
 
 {%highlight cpp %}
 void how_many_pages_prefetched(int future_limit, int zero) {
@@ -563,7 +560,9 @@ MEM_INST_RETIRED.STLB_MISS_LOADS    = 4
 ...
 ```
 
-Looks like the NPP prefetches only one page ahead. Cool, no complaints there!
+Looks like the NPP prefetches only one page ahead. If you gradually increase `future_limit` to 2, 3, 4...and beyond, you'd
+notice that number of STLB misses increase in roughly the same cadence. That's a strong hint NPP is indeed fetching only
+one page ahead.
 
 ## Prefetch Direction
 
