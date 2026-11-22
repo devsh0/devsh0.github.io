@@ -451,12 +451,12 @@ on why this makes sense. Go read it if you're interested.
 ## What About Stores?
 
 Good question. Our experiments so far have only used loads. A sane person would think stores shouldn't behave any different.
-But to my surprise, stores don't seem to trigger prefetches. If you're browsing the [full source][github-gist] on GitHub you'd
+But to my surprise, stores don't seem to trigger prefetches at all. If you're browsing the [full source][github-gist] on GitHub you'd
 notice that we are faulting the mapped range with loads. That choice is deliberate: we're intentionally mapping every
 virtual page in the mapped range to the physical zero page. This reduces cache footprint, and potentially restricts one
 more source of noise.
 
-We cannot keep doing this for this next experiment, though; we don't want page faults in the probe path. So we switch to
+We cannot keep doing this for this next experiment, though: we don't want page faults in the probe path. So we switch to
 faulting with stores before we start the experiment. That out of the way, here's the kernel we'll use to verify no prefetch
 on stores:
 
@@ -479,7 +479,7 @@ STLB) catching all the misses from STLB.
 ## How Many PTEs are Prefetched
 
 We have established that the next-page prefetcher prefetches at least one future PTE. We shouldn't expect it to load more
-than one page ahead; it's called _next_-page prefetcher for a reason. But let's verify that with this simple workload:
+than one page ahead; it's called _next_-page prefetcher for a reason. But let's verify that with this simple experiment:
 
 {%highlight cpp %}
 void how_many_pages_prefetched(int future_limit, int zero) {
@@ -566,8 +566,8 @@ one page ahead.
 
 ## Prefetch Direction
 
-Does the prefetcher work in backward direction too? This is the last piece of the puzzle and fortunately very easy to test:
-just walk the mapped range backwards. If you get close to 1000 misses the answer is no, otherwise yes. Here's the workload:
+Does the prefetcher work backwards too? This is the last piece of the puzzle and fortunately very easy to test: just walk
+the mapped range backwards. If you get close to 1000 misses the answer is no, otherwise yes. Here's the test:
 
 {%highlight cpp %}
 [[gnu::always_inline]]
@@ -591,8 +591,8 @@ MEM_INST_RETIRED.STLB_MISS_LOADS        = 1000
 
 This is a bit shocking. If you recall from the "Introduction" section, Intel manuals seem to suggest the next-page prefetcher
 triggers while walking "upwards" (what I call forward) or "downward" (what I call backward). This behavior is documented
-for both Ivy Bridge and Redwood Cove...but that's not what we see for SKX. I don't have any theories explaining this disconnect
-between SKX and the other uarchs, if you do feel free to share in the comment section.
+for both Ivy Bridge and Redwood Cove, but that's not what we see for SKX. I don't have any theories explaining this disconnect
+between SKX and the other uarchs. If you do, feel free to share in the comments.
 
 ## So Where Can I Use This Knowledge
 
@@ -601,9 +601,11 @@ programs for a single microarchitecture from a single CPU vendor is almost alway
 beyond next Friday. My goal here is to share how I attempt reversing undocumented machine behavior and invite fellow nerds
 to kick-start discussions that hopefully help me or somebody else learn something new.
 
-That said, if you're one of those weirdos who can manage to care only about one type of machine (Skylake-X to be precise),
-you may find the details interesting from a practical PoV. Either way, I'm tired. This is too much writing for a first
-post. 👋
+That said, if you're one of those weirdos who can afford to care only about one type of machine (Skylake-X to be precise),
+you may find the details interesting from a practical PoV. Hardware security researchers may also find this stuff
+interesting; a large chunk of what I know about CPU microarchitectures is thanks to security folks obsessing over tiniest
+details of some hardware component, then use it as a data leak channel and write very elaborate papers detailing how
+their exploit works. Either way, I'm tired. This is too much writing for a first post. 👋
 
 [intel-whitepaper]: https://intel.github.io/optimization-zone/hardware/HWPrefetchTuning/#123-next-page-prefetcher-l1-npp
 [insn-wrmsr]: https://intel.github.io/SDM/instruction/WRMSR.html
