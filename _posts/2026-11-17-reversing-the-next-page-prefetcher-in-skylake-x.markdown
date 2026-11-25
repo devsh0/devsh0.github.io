@@ -201,7 +201,7 @@ Now we have all the pieces required to start monitoring hardware events. Through
 | [MEM_INST_RETIRED.STLB_MISS_STORES][evt-miss-stores] | 0x12D0 | Retired store instructions that start a miss in the STLB. |
 | [DTLB_LOAD_MISSES.STLB_HIT][evt-stlb-hit]            | 0x2008 | Loads that miss the data TLB and hit the unified STLB.    |
 
-It's note hard to observe that the event configs are of the form 0x\<Umask>\<EventSel>, where Umask and EventSel are coming
+It's not hard to observe that the event configs are of the form 0x\<Umask>\<EventSel>, where Umask and EventSel are coming
 straight from the "PROGRAMMING INFO" column of the corresponding event in the [perfmon website][perfmon-events] (the 'H'
 suffix is Intel's way of saying the number is given in hexadecimal). Not all event configs are derived this way, but it's
 enough for the simple ones we're gonna use here.
@@ -249,7 +249,7 @@ at iteration `i-1`. Computing `zero` at iteration `i-1` in turn depends on compu
 a cyclic loop-carried dependency chain here: the load in `map_base[i + zero]` feeds `add` in `dummy += ...`. The result
 of that `add` then feeds the `and` in `zero = zero & ...`. Result of the `and` feeds the next load at iteration `i+1`.
 In layman terms, the loads at iteration `i` and iteration `i+1` cannot execute together or out-of-order. This is intentional:
-alloweing out-of-order execution of the two loads could significantly perturb our results. We'll see why in a moment.
+allowing out-of-order execution of the two loads could significantly perturb our results. We'll see why in a moment.
 
 The last line is a common trick to avoid the compiler throw away our computation; it's falsely advertising that the inline
 asm uses the value of `dummy` computed in the loop and forcing the compiler to materialize `dummy` into a register.
@@ -350,14 +350,14 @@ Comparatively, walking the right half is not bad at all. In fact this time the p
 splitting the slice that triggers prefetch binary-search style and further narrow the access range. The table below shows
 the results:
 
-| Left half    | Right half   | Slice length | Pretech Triggered By |
-|--------------|--------------|--------------|----------------------|
-| [0..2047]    | [2048..4095] | 2048         | Right Half           |
-| [2048..3071] | [3072..4095] | 1024         | Right Half           |
-| [3072..3583] | [3584..4095] | 512          | Left Half            |
-| [3072..3327] | [3328..3583] | 256          | Right Half           |
-| [3328..3455] | [3456..3583] | 128          | Left Half            |
-| [3328..3391] | [3392..3455] | 64           | Neither Half         |
+| Left half    | Right half   | Slice length | Prefetch Triggered By |
+|--------------|--------------|--------------|-----------------------|
+| [0..2047]    | [2048..4095] | 2048         | Right Half            |
+| [2048..3071] | [3072..4095] | 1024         | Right Half            |
+| [3072..3583] | [3584..4095] | 512          | Left Half             |
+| [3072..3327] | [3328..3583] | 256          | Right Half            |
+| [3328..3455] | [3456..3583] | 128          | Left Half             |
+| [3328..3391] | [3392..3455] | 64           | Neither Half          |
 
 Hmm, neither left nor right slice of the last row triggers the prefetcher. But we do know that walking `page[3328..3455]`
 does work. So here's the new plan: we start our walk at offset 3328 but not stop at 3391, rather keep pushing the right
@@ -435,7 +435,7 @@ the experiment doesn't prove the "any byte in either cache line" part; we've onl
 line 52 followed by the load of first byte in cache line 53 triggers the prefetch, but you can easily verify that by
 tweaking the parameters of `touch_page_with_hole`. For example, `hole_offset = 3329` and `hole_length = 126` touches first
 byte of line 52 and last byte of line 53, skipping everything in-between. This still triggers prefetch. To limit the size
-of this post, I'll leave out certain details like that from here on after. I'd be happy to fill those gaps in the comment
+of this post, I'll leave out certain details like that from here on out. I'd be happy to fill those gaps in the comment
 section if you have questions.
 
 Note that for the prefetcher to trigger, load from 52nd cache line must execute before the load from 53rd cache line
